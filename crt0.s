@@ -20,7 +20,7 @@ FT_SFX_ENABLE   = 0		;undefine to exclude all sound effects code
 
 
     .export _exit,__STARTUP__:absolute=1
-	.exportzp _FRAME_CNT, _SECONDS_CNT
+	.exportzp _FRAME_CNT, _SECONDS_CNT, _PAD_STATE, _PAD_STATET
 	
 	.import push0,popa,popax,_main,zerobss,copydata
 
@@ -70,8 +70,10 @@ SCROLL_Y: 			.res 1
 SCROLL_X1: 			.res 1
 SCROLL_Y1: 			.res 1
 PAD_STATE: 			.res 2		;one byte per controller
+_PAD_STATE = PAD_STATE
 PAD_STATEP: 		.res 2
 PAD_STATET: 		.res 2
+_PAD_STATET = PAD_STATET
 PPU_CTRL_VAR: 		.res 1
 PPU_CTRL_VAR1: 		.res 1
 PPU_MASK_VAR: 		.res 1
@@ -109,6 +111,7 @@ BUFFER_POS: .res 1
 BG_PAL_NUMBER: .res 1
 SECONDS_CNT: .res 1
 _SECONDS_CNT = SECONDS_CNT
+
 
 
 
@@ -267,11 +270,11 @@ _update_screen:
 	lda PPU_COMMANDS_BUF,x
 	inx
 	cmp #$FF
-	bne @write
-	lda PPU_COMMANDS_BUF,x
-	cmp #$FF
-	bne @loop
-	lda PPU_COMMANDS_BUF-1,x
+	bne @write				; normal data byte
+	lda PPU_COMMANDS_BUF,x	; found 0xFF. Peek next byte, not incrementing X
+	cmp #$FF				
+	bne @loop				; if next byte not $FF - start new command
+	lda PPU_COMMANDS_BUF-1,x; yes, it's second FF, load first FF byte and write it by next command
 
 @write:
 	sta PPU_DATA
@@ -291,4 +294,4 @@ _update_screen:
 
 .segment "CHARS"
 
-	.incbin "graphics.chr"
+	.incbin "assets/graphics.chr"

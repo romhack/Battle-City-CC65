@@ -21,8 +21,7 @@
 	.export _bank_spr,_bank_bg
 	.export _vram_read,_vram_write
 	.export _pad_poll,_pad_trigger,_pad_state
-	.export _rand8,_rand16,_set_rand
-	.export _vram_adr,_vram_put,_vram_fill,_vram_inc,_vram_unrle
+	.export _vram_adr,_vram_put,_vram_fill,_vram_inc
 	.export _set_vram_update,_flush_vram_update
 	.export _memcpy,_memfill,_delay
 	
@@ -438,62 +437,6 @@ _ppu_wait_nmi:
 
 
 
-;void __fastcall__ vram_unrle(const unsigned char *data);
-
-_vram_unrle:
-
-	tay
-	stx <RLE_HIGH
-	lda #0
-	sta <RLE_LOW
-
-	lda (RLE_LOW),y
-	sta <RLE_TAG
-	iny
-	bne @1
-	inc <RLE_HIGH
-
-@1:
-
-	lda (RLE_LOW),y
-	iny
-	bne @11
-	inc <RLE_HIGH
-
-@11:
-
-	cmp <RLE_TAG
-	beq @2
-	sta PPU_DATA
-	sta <RLE_BYTE
-	bne @1
-
-@2:
-
-	lda (RLE_LOW),y
-	beq @4
-	iny
-	bne @21
-	inc <RLE_HIGH
-
-@21:
-
-	tax
-	lda <RLE_BYTE
-
-@3:
-
-	sta PPU_DATA
-	dex
-	bne @3
-	beq @1
-
-@4:
-
-	rts
-
-
-
 ;void __fastcall__ scroll(unsigned int x,unsigned int y);
 
 _scroll:
@@ -758,65 +701,6 @@ _pad_state:
 	ldx #0
 	rts
 
-
-
-;unsigned char __fastcall__ rand8(void);
-;Galois random generator, found somewhere
-;out: A random number 0..255
-
-rand1:
-
-	lda <RAND_SEED
-	asl a
-	bcc @1
-	eor #$cf
-
-@1:
-
-	sta <RAND_SEED
-	rts
-
-rand2:
-
-	lda <RAND_SEED+1
-	asl a
-	bcc @1
-	eor #$d7
-
-@1:
-
-	sta <RAND_SEED+1
-	rts
-
-_rand8:
-
-	jsr rand1
-	jsr rand2
-	adc <RAND_SEED
-	ldx #0
-	rts
-
-
-
-;unsigned int __fastcall__ rand16(void);
-
-_rand16:
-
-	jsr rand1
-	tax
-	jsr rand2
-
-	rts
-
-
-;void __fastcall__ set_rand(unsigned char seed);
-
-_set_rand:
-
-	sta <RAND_SEED
-	stx <RAND_SEED+1
-
-	rts
 
 
 
