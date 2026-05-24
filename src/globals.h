@@ -26,10 +26,13 @@
 #define COORD_TO_NT_OFFSET(x, y) (((y) << 5) + (x))
 //neslib hides left column for scrolling, battle city - not, define custom mask
 #define MASK_SHOW_ALL (MASK_BG | MASK_SPR | MASK_EDGE_BG | MASK_EDGE_SPR)
-#define TILE_GREY           0x11
 #define TILE_BLACK          0x00
+#define TILE_ARMOR          0x10
+#define TILE_GREY           0x11
+#define TILE_PLAYER_LIVE    0x14
 #define TILE_ICE            0x21
 #define TILE_FOREST         0x22
+
 #define STAGE_MIN           1
 #define STAGE_MAX           35
 
@@ -76,16 +79,30 @@
 #define TANK_TYPE_0         0x00
 #define TANK_TYPE_1         0x20
 #define TANK_TYPE_2         0x40
-#define TANK_TYPE_3         0x60
+#define TANK_TYPE_3         0x60 //Last type, armor piercing bullets
 #define TANK_TYPE_4         0x80
 #define TANK_TYPE_5         0xA0
-#define TANK_TYPE_6         0xC0
+#define TANK_TYPE_6         0xC0 //Fast bullets
 #define TANK_TYPE_7         0xE0
 
 #define GET_TANK_ARMOR(id)      (tank_type[id] & 0x03)
 #define IS_BONUS_TANK(id)       (tank_type[id] & TANK_BONUS_FLAG)
 #define GET_TANK_TYPE_BITS(id)  (tank_type[id] & 0xE0)
 #define GET_TANK_BASE_TILE(id)  (tank_type[id] & 0xF0)
+
+/*============================================================
+ *  BULLET STATUS (upper 4 bits = command)
+ *============================================================*/
+#define BULLET_CMD_IDLE         0x00
+#define BULLET_CMD_RICOCHET_3   0x10  // ricochet frame 3 (first)
+#define BULLET_CMD_RICOCHET_2   0x20  // ricochet frame 2
+#define BULLET_CMD_RICOCHET_1   0x30  // ricochet frame 1 (last)
+#define BULLET_CMD_FLY          0x40  // bullet in flight
+
+#define BULLET_RICOCHET_INIT    0x33  // start ricochet: frame 3, timer = 3
+#define BULLET_FRAME_TIMER      0x03  // initial per-frame countdown
+
+#define GET_BULLET_CMD(id)      (bullet_status[id] & 0xF0)
 
 /*============================================================
  *  ENUMS
@@ -167,9 +184,8 @@ EXTERN unsigned char skip_stage_select_flag;
 EXTERN unsigned char enemy_respawn_place_index;
 #pragma zpsym("enemy_respawn_place_index")
 
-EXTERN unsigned char player1_lives, player2_lives;
-#pragma zpsym("player1_lives")
-#pragma zpsym("player2_lives")
+EXTERN unsigned char player_lives[2];
+#pragma zpsym("player_lives")
 
 EXTERN unsigned char stage_number;
 #pragma zpsym("stage_number")
@@ -256,10 +272,23 @@ EXTERN unsigned char bullet_x[10];
 EXTERN unsigned char bullet_y[10];
 #pragma zpsym("bullet_y")
 
+//Bullet property. Format:
+//Bit    0: set = bullet twice as fast
+//       1: set = armor-piercing bullet 
 EXTERN unsigned char bullet_property[10];
 #pragma zpsym("bullet_property")
 
+//Bullet status. Format:
+//Lower 2 bits (#0,1):  frame counter per animation frame (up to 3)
+//Bits #4,5:            ricochet animation frame counter (up to 3)
+//Bit #6:               set = bullet in flight, direction attributes processed (lower 2 bits):
+//  0 = up
+//  1 = left
+//  2 = down
+//  3 = right
 EXTERN unsigned char bullet_status[10];
+#pragma zpsym("bullet_status")
+
 EXTERN unsigned char nt_addr_lo[8], nt_addr_hi[8];   
 #pragma zpsym("nt_addr_lo")
 #pragma zpsym("nt_addr_hi")
