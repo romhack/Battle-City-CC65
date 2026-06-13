@@ -39,6 +39,7 @@ REM Cleanup and organize
 echo.
 echo Cleaning up...
 del %src%\*.o
+del *.o
 move /Y labels.txt build\ >nul
 move /Y %src%\*.s build\ >nul
 move /Y %name%.nes build\ >nul

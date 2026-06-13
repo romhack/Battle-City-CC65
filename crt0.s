@@ -81,6 +81,7 @@ RAND_SEED: 			.res 2
 FT_TEMP: 			.res 3
 TEMP: 				.res 11
 SPRID:				.res 1
+SPRSTEP:			.res 1
 PAD_BUF		=TEMP+1
 PTR			=TEMP	;word
 LEN			=TEMP+2	;word
@@ -132,30 +133,31 @@ start:
 _exit:
 
     sei
+	lda	#$10
+	sta	PPU_CTRL	; background of	second chr generator
 	cld
+	ldx	#2
+
+	@wait:			
+	lda	PPU_STATUS
+	bpl	@wait
+	lda	#$06
+	sta	PPU_MASK
+	sta PPU_MASK_VAR	
+	dex
+	bne	@wait
+	ldx	#$7F 
+	txs
+	inx
+	stx DMC_FREQ
 	ldx #$40
 	stx CTRL_PORT2
-    ldx #$7f
-    txs
     inx
 	lda #0
-    sta PPU_MASK
-	sta PPU_MASK_VAR
 	sta BUFFER_POS
-    stx DMC_FREQ
-    stx PPU_CTRL		;no NMI
 
-initPPU:
-    bit PPU_STATUS
-@1:
-    bit PPU_STATUS
-    bpl @1
-@2:
-    bit PPU_STATUS
-    bpl @2
 
 	jsr	copydata
-
     lda #<(__STACK_START__+__STACKSIZE__) 
     sta	sp
     lda	#>(__STACK_START__+__STACKSIZE__)
@@ -165,14 +167,16 @@ initPPU:
 	lda PPU_STATUS
 	and #$80
 	sta <NTSC_MODE
-	jsr _ppu_off
 
 	lda #0
 	ldx #0
 	jsr _set_vram_update
+	lda #4
+	sta SPRSTEP
 	lda #%10000000
 	sta <PPU_CTRL_VAR	
 	sta PPU_CTRL		;enable NMI
+
 	jmp _main
 	
 	.include "lib/neslib.s"
@@ -224,6 +228,7 @@ nmi:
 @skipAll:	
 	lda <PPU_MASK_VAR
 	sta PPU_MASK
+	jsr _reset_oam_buffer
 	inc <FRAME_CNT1
 	inc <FRAME_CNT2
 	lda <FRAME_CNT2
@@ -284,6 +289,28 @@ _update_screen:
 	lda #0
 	sta BUFFER_POS
 	rts	
+
+;reset OAM buffer and cycle fill direction
+_reset_oam_buffer:
+	ldx     SPRID
+	lda     SPRSTEP; 4 or -4 for sprite cycling
+	eor     #$FF
+	clc
+	adc     #1              ; gap := -gap
+
+
+	sta     SPRSTEP; 4 or -4 for sprite cycling
+@writeLoop:
+	txa
+	clc
+	adc     SPRSTEP ; start filling from end
+	tax
+	lda     #$F0 ; 'ё'
+	sta     OAM_BUF,x
+	cpx     #4
+	bne     @writeLoop
+	stx     SPRID
+	rts
 
 .segment "VECTORS"
 

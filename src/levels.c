@@ -1,5 +1,6 @@
 #include "../lib/neslib.h"
 #include "globals.h" 
+#include "../game.h"
 #include "util.h"     
 #include "levels.h"
 
@@ -544,22 +545,6 @@ void load_stage(void) {
     copy_stage_attributes_to_vram();    
 }
 
-//load normal HQ to screen buffer
-void load_normal_hq(void){
-    static const unsigned char hq_line_1[] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-    static const unsigned char hq_line_2[] = {0x00, 0x0F, 0x0F, 0x0F, 0x0F, 0x00};
-    static const unsigned char hq_line_3[] = {0x00, 0x0F, 0xC8, 0xCA, 0x0F, 0x00};
-    static const unsigned char hq_line_4[] = {0x00, 0x0F, 0xC9, 0xCB, 0x0F, 0x00};
-    memcpy(SCREEN_BUFFER + COORD_TO_NT_OFFSET(0xC, 0x18), hq_line_1, sizeof(hq_line_1));
-    memcpy(SCREEN_BUFFER + COORD_TO_NT_OFFSET(0xC, 0x19), hq_line_2, sizeof(hq_line_2));
-    memcpy(SCREEN_BUFFER + COORD_TO_NT_OFFSET(0xC, 0x1A), hq_line_3, sizeof(hq_line_3));
-    memcpy(SCREEN_BUFFER + COORD_TO_NT_OFFSET(0xC, 0x1B), hq_line_4, sizeof(hq_line_4));
-    //HQ attributes
-    dst = SCREEN_BUFFER + 0x3F3;
-    *dst = 0;
-    ++dst;
-    *dst = *dst & 0xCC;
-}
 void load_level_flag(){
     static const unsigned char flag_line1[] = {0x6C, 0xFC};
     static const unsigned char flag_line2[] = {0x6D, 0xFD};

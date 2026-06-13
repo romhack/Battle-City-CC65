@@ -125,13 +125,17 @@ typedef enum {
 } StageMode;
 
 /*============================================================
- *  ASM FUNCTIONS (game.s)
+ *  STRUCTS
  *============================================================*/
-void draw_brick_char(unsigned char ascii_char, unsigned char x, unsigned char y);
-void set_bg_pal_number(unsigned char pal_id);
-void add_vram_fill_cmd(unsigned char* ppu_addr, unsigned char value, unsigned char length);
-void add_vram_cpy_cmd(unsigned int ppu_addr, const unsigned char *src, unsigned char length);
-void add_vram_cpy_based_cmd(unsigned int ppu_addr, const unsigned char *src, unsigned char length, unsigned char char_base);
+//4x4 tiles quadrant struct for read/write compilation optimizations
+typedef struct {
+    unsigned char left_top;         // offset 0x00
+    unsigned char right_top;        // offset 0x01
+    unsigned char pad[0x1E];    
+    unsigned char left_bottom;      // offset 0x20
+    unsigned char right_bottom;     // offset 0x21
+} MetaTileEntry;
+
 
 /*============================================================
  *  ASM ZERO PAGE VARIABLES
@@ -196,8 +200,10 @@ EXTERN unsigned char stage_mode;
 EXTERN unsigned char number_string[8];
 #pragma zpsym("number_string")
 
-EXTERN unsigned char hq_armor_timer, hq_status;
+EXTERN unsigned char hq_armor_timer;
 #pragma zpsym("hq_armor_timer")
+//0 - hq destroyed, 0x80 - hq alive, variable has explosion countdown in it
+EXTERN unsigned char hq_status;
 #pragma zpsym("hq_status")
 
 EXTERN unsigned char enemy_reinforce_count;
@@ -226,9 +232,9 @@ EXTERN unsigned char bonus_x, bonus_y, bonus_number;
 #pragma zpsym("bonus_y")
 #pragma zpsym("bonus_number")
 
+//Coordinates of exact center  of tank's bounding box
 EXTERN unsigned char tank_x[8];
 #pragma zpsym("tank_x")
-
 EXTERN unsigned char tank_y[8];
 #pragma zpsym("tank_y")
 

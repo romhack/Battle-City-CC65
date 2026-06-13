@@ -1,6 +1,7 @@
 ;Hardware-dependent functions to be implemented in assembly specific for game
 
-.export _draw_brick_char, _set_bg_pal_number, _add_vram_fill_cmd, _add_vram_cpy_cmd, _add_vram_cpy_based_cmd 
+.export _draw_brick_char, _set_bg_pal_number, _reset_vram_cmd_queue, _add_vram_fill_cmd, _add_vram_cpy_cmd, _add_vram_cpy_based_cmd 
+.export _add_sprite, _add_sprite_16x16
 
 ;void __fastcall__ draw_brick_char(unsigned char ascii_char, unsigned char x, unsigned char y);
 
@@ -253,6 +254,17 @@ _set_bg_pal_number:
 	sta BG_PAL_NUMBER
 	rts
 
+;void reset_vram_cmd_queue(void);
+;
+;Reset commands buffer position, used to not dump anything in commands buffer on next NMI, effectively clearing existing commands
+;For example, when write to commands buffer is a side effect along with writing to screen buffer,
+;like writing HQ tiles before stage select screen  
+
+_reset_vram_cmd_queue:
+    lda #0
+    sta BUFFER_POS
+    rts
+
 
 ; void __fastcall__ add_vram_fill_cmd(unsigned int ppu_addr, unsigned char value, unsigned char length);
 ;
@@ -371,4 +383,133 @@ _add_vram_cpy_cmd_body:
     stx BUFFER_POS
 
     rts	
+
+
+;Writes to OAM buffer and advances to next slot
+;CHR_BYTE - sprite index
+;SPR_X, SPR_Y - coordinates
+;TEMP_VAR - attribute
+write_oam_entry:   
+    ldx SPRID
+    lda CHR_BYTE
+	sta OAM_BUF+1,x
+    lda SPR_Y
+    sec
+    sbc #8              ;both halves sprite will have Y - 8, as coordinates are of center of metasprite
+	sta OAM_BUF+0,x     
+    lda SPR_X
+	sta OAM_BUF+3,x
+    jsr _set_ptr_to_scrn_buffer
+    ldy #0
+    lda (PTR),Y
+    cmp #$22            ;Check for tank sprite intersecting forest: $22 in Pattern Table - forest tile
+    bne @skip_attrib
+    lda TEMP_VAR
+    ora #$20            ;OAM_BEHIND
+    sta TEMP_VAR
+@skip_attrib:
+    lda TEMP_VAR
+    sta OAM_BUF+2,x
+
+	txa
+	clc
+	adc SPRSTEP
+	sta SPRID
+	rts       
+
+; Sets PTR to the SCREEN_BUFFER at SPR_X and SPR_Y, used at add_sprite functions to check forest tile
+_set_ptr_to_scrn_buffer:
+
+    lda #0
+    sta TEMP           ; Screen $20 tiles wide. High address byte in NT increases by 1, 
+                        ;if from screen start will be $100 tiles or 8 tile rows (Y=8). 
+                        ;Thus, high byte can be calculated by formula: (Y div 8) or (Y shr 3). 
+                        ;Then in high byte bit #2 is set (high byte now not less than 4, as screen buffer is at 0x400): 
+                        ;further, to high byte will be added $1c, so in result shouldn't get address less than $2000 (1st NT). 
+                        ;Low byte in this case, can be calculated by formula: (X + Y*($20)) or (X + (Y shl 5)). 
+
+    lda SPR_Y
+    lsr a
+    lsr a
+    lsr a               ; Y div 8 - get rid of bits 0,1,2
+    lsr a               ; Y bits 3,4,5 will become hi bits of low ptr byte, because X will be >> 3
+    ror TEMP
+    lsr a
+    ror TEMP
+    lsr a               
+    ror TEMP
+    ora #4              ; Set second bit as offset 0x400, and save Y bits 6,7 in hi ptr byte
+	sta <PTR+1
+    lda SPR_X
+    clc
+    adc #3
+    lsr a
+    lsr a
+    lsr a
+    ora TEMP            ; ((X + 3) >> 3 + ((Y >> 3) << 5))
+    sta <PTR
+    rts
+
+;void __fastcall__ add_sprite(unsigned char x,unsigned char y,unsigned char chrnum,unsigned char pal);
+_add_sprite:  
+; Left half
+    sta TEMP_VAR        ;A has attribute    
+	ldy #0		        ;3 popa calls replacement
+	lda (sp),y          ;chr number
+	iny
+    sta CHR_BYTE
+	lda (sp),y          ;Y
+    iny
+    sta SPR_Y   
+	lda (sp),y          ;X
+    sta SPR_X
+    jsr write_oam_entry
+
+	lda <sp
+	clc
+	adc #3 ;4
+	sta <sp
+	bcc @1
+	inc <sp+1
+@1:
+	rts  
+
+;void __fastcall__ add_sprite_16x16(unsigned char x,unsigned char y,unsigned char chrnum,unsigned char pal);
+_add_sprite_16x16:
+; Left half
+    sta TEMP_VAR        ;A has attribute    
+    pha 
+	ldy #0		        ;3 popa calls replacement
+	lda (sp),y          ;chr number
+	iny
+    sta CHR_BYTE
+	lda (sp),y          ;Y
+    iny
+    sta SPR_Y   
+	lda (sp),y          ;X
+    pha
+    sec
+    sbc #8              ; first half has x - 8
+    sta SPR_X
+    jsr write_oam_entry
+
+; Right half
+    pla                 ; restore initial X
+	sta SPR_X
+    pla                 ; restore initial attribute
+    sta TEMP_VAR        
+    lda CHR_BYTE
+    clc
+    adc #2              ; right part has chr number + 2
+	sta CHR_BYTE
+    jsr write_oam_entry
+
+	lda <sp
+	clc
+	adc #3 ;4
+	sta <sp
+	bcc @1
+	inc <sp+1
+@1:
+	rts
 	
