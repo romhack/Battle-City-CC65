@@ -20,7 +20,7 @@ FT_SFX_ENABLE   = 0		;undefine to exclude all sound effects code
 
 
     .export _exit,__STARTUP__:absolute=1
-	.exportzp _FRAME_CNT, _SECONDS_CNT, _PAD_STATE, _PAD_STATET
+	.exportzp _FRAME_CNT, _SECONDS_CNT, _PAD_STATE, _PAD_STATET, _SPR_PRIORITY
 	
 	.import push0,popa,popax,_main,zerobss,copydata
 
@@ -82,6 +82,8 @@ FT_TEMP: 			.res 3
 TEMP: 				.res 11
 SPRID:				.res 1
 SPRSTEP:			.res 1
+SPR_PRIORITY:		.res 1
+_SPR_PRIORITY = SPR_PRIORITY
 PAD_BUF		=TEMP+1
 PTR			=TEMP	;word
 LEN			=TEMP+2	;word

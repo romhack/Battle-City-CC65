@@ -405,7 +405,7 @@ write_oam_entry:
     cmp #$22            ;Check for tank sprite intersecting forest: $22 in Pattern Table - forest tile
     bne @skip_attrib
     lda TEMP_VAR
-    ora #$20            ;OAM_BEHIND
+    ora SPR_PRIORITY            ;Switch to OAM_BEHIND/FRONT
     sta TEMP_VAR
 @skip_attrib:
     lda TEMP_VAR

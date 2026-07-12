@@ -39,22 +39,22 @@
 /*============================================================
  *  TANK STATUS (upper 4 bits = command)
  *============================================================*/
-#define TANK_CMD_NONE       0x00
+#define TANK_CMD_NONE       0x00 // Empty slot / No tank
 #define TANK_CMD_EXPLODE_1  0x10
 #define TANK_CMD_EXPLODE_2  0x20
 #define TANK_CMD_EXPLODE_3  0x30
 #define TANK_CMD_EXPLODE_4  0x40
 #define TANK_CMD_EXPLODE_5  0x50
 #define TANK_CMD_EXPLODE_6  0x60
-#define TANK_CMD_EXPLODE_7  0x70
-#define TANK_CMD_NORMAL     0x80
-#define TANK_CMD_RANDOM     0x90
-#define TANK_CMD_MOVE_OBST  0xA0
+#define TANK_CMD_EXPLODE    0x70 // Explosion animation (Lower nibble is the frame countdown, e.g., 0x73 starts it)
+#define TANK_CMD_DRIFT      0x80 // Coast / Stop / Ice Slide (Command_Misc_Status)
+#define TANK_CMD_RANDOM     0x90 // AI: Pick random direction/target
+#define TANK_CMD_MOVE       0xA0 // Move forward until obstacle (The actual "Normal" move)
 #define TANK_CMD_TARGET_HQ  0xB0
 #define TANK_CMD_TARGET_P2  0xC0
 #define TANK_CMD_TARGET_P1  0xD0
-#define TANK_CMD_RESPAWN_E  0xE0
-#define TANK_CMD_RESPAWN_F  0xF0
+#define TANK_CMD_LOAD_TANK  0xE0 // Initialize tank type, armor, and properties
+#define TANK_CMD_RESPAWN    0xF0 // Respawn animation (flashing ring)
 
 #define TANK_DIR_UP         0x00
 #define TANK_DIR_LEFT       0x01
@@ -144,6 +144,8 @@ extern unsigned char FRAME_CNT;
 #pragma zpsym("FRAME_CNT")
 extern unsigned char SECONDS_CNT;
 #pragma zpsym("SECONDS_CNT")
+extern unsigned char SPR_PRIORITY;
+#pragma zpsym("SPR_PRIORITY")
 extern unsigned char PAD_STATE[2];
 #pragma zpsym("PAD_STATE")
 extern unsigned char PAD_STATET[2];
@@ -167,6 +169,10 @@ EXTERN unsigned int temp16;
 EXTERN unsigned char *src, *dst;
 #pragma zpsym("src")
 #pragma zpsym("dst")
+
+EXTERN unsigned char random_lo, random_hi;
+#pragma zpsym("random_lo")
+#pragma zpsym("random_hi")
 
 EXTERN GameState current_state;
 #pragma zpsym("current_state")
@@ -232,15 +238,52 @@ EXTERN unsigned char bonus_x, bonus_y, bonus_number;
 #pragma zpsym("bonus_y")
 #pragma zpsym("bonus_number")
 
+EXTERN unsigned char ai_x_aim, ai_y_aim;
+#pragma zpsym("ai_x_aim")
+#pragma zpsym("ai_y_aim")
+
 //Coordinates of exact center  of tank's bounding box
 EXTERN unsigned char tank_x[8];
 #pragma zpsym("tank_x")
 EXTERN unsigned char tank_y[8];
 #pragma zpsym("tank_y")
 
+/*
+ * tank_status: Main state machine variable for each tank (players and enemies).
+ * 
+ * Format: [Command (4 bits)][Sub-state/Timer (2 bits)][Direction (2 bits)]
+ *
+ * Upper Nibble (Command Index):
+ *  0x0_ : No tank / Empty slot
+ *  0x1_ - 0x7_ : Explosion animation sequence (counts down frames)
+ *  0x8_ : Drift / Coast / Stop (bits 2-3 act as a countdown timer)
+ *  0x9_ : Get Random AI Status (AI decision making)
+ *  0xA_ : Move (normal movement until obstacle)
+ *  0xB_ : AI Target = HQ
+ *  0xC_ : AI Target = Player 2
+ *  0xD_ : AI Target = Player 1
+ *  0xE_ : Load Tank (initializes type and properties)
+ *  0xF_ : Set Respawn (respawn animation)
+ *
+ * Lower Nibble (Sub-state & Direction):
+ *  - Bits 0-1 (0x03): Movement Direction (0=Up, 1=Left, 2=Down, 3=Right)
+ *  - Bits 2-3 (0x0C): Animation frame index or state timer 
+ *                     (e.g., drift timer steps down by 4: 8 -> 4 -> 0)
+ *
+ * Examples:
+ *  0xA2 : Moving Down
+ *  0x88 : Drifting/Coasting (timer = 8)
+ *  0x73 : Explosion animation frame
+ *  0xF0 : Respawn animation start
+ */
 EXTERN unsigned char tank_status[8];
 #pragma zpsym("tank_status")
 
+//tank_type bits:
+//0,1 - armor level
+//2 - bonus tank flag
+//3,4 - unused
+//5,6,7 - tank type (possibly 8 types)
 EXTERN unsigned char tank_type[8];
 #pragma zpsym("tank_type")
 

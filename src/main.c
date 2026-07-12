@@ -70,6 +70,7 @@ void reset_screen(void){
 	load_spr_pal();
 	set_bg_pal_number(3);
 	memfill(SCREEN_BUFFER, 0, 1024);
+    SPR_PRIORITY = 0x20;//OAM_BEHIND for forest overlap
 	oam_set(0);
 	init_8_char_string(hiscore_1p_string);
 	init_8_char_string(hiscore_2p_string);
@@ -185,6 +186,35 @@ void initialize_gameover (void){
     FRAME_CNT = 0;
 }
 
+static void initialize_tank(unsigned char id){
+    static const unsigned char player_respawn_x[] = {0x58, 0x98};
+    static const unsigned char player_respawn_y[] = {0xD8, 0xD8};
+    static const unsigned char enemy_respawn_x[] = {0x18, 0x78, 0xD8};
+    static const unsigned char enemy_respawn_y[] = {0x18, 0x18, 0x18};
+
+    tank_type[id] = 0;
+    if (id < 2){//player tank
+        tank_x[id] = player_respawn_x[id];
+        tank_y[id] = player_respawn_y[id];
+        player_blink_timer[id] = 0;
+    }
+    else{//enemy tank
+        ++enemy_respawn_place_index;
+        if (enemy_respawn_place_index >= 3){
+            enemy_respawn_place_index = 0;
+        }
+        tank_x[id] = enemy_respawn_x[enemy_respawn_place_index];
+        tank_y[id] = enemy_respawn_y[enemy_respawn_place_index];
+        if (enemy_reinforce_count == 3 || enemy_reinforce_count == 10 || enemy_reinforce_count == 17){
+            tank_type[id] = TANK_BONUS_FLAG;
+            bonus_x = 0; //hide unpicked bonus if bonus tank appears
+        }
+    }
+    tank_status[id] = TANK_CMD_RESPAWN;
+    //Draw empty space under tank. In case if level was created from Construction and respawn point is occupied by tsa block
+    write_tsa_to_vram((tank_x[id] >> 3) - 1, (tank_y[id] >> 3) - 1, 0x0F);
+}
+
 void command_explode(unsigned char id){
     //temp
     tank_status[id]--;
@@ -231,8 +261,65 @@ void command_explode(unsigned char id){
     initialize_gameover();	
 }
 
+
+unsigned char get_random(void) {
+    //temp - temporary byte
+    temp = random_lo;
+    random_lo = random_lo << 3;   
+    random_lo = random_lo - temp;
+    random_lo += SECONDS_CNT;
+    ++random_hi;
+    temp = ((unsigned char*)0)[random_hi];
+    random_lo += temp;
+    return random_lo;
+}
+
+void get_random_aim(unsigned char id) {
+    //cnt - threshold
+
+    cnt = respawn_delay >> 2;
+    if (cnt < SECONDS_CNT) {
+        // long time with no progress - tank gets impatient, rushes the HQ
+        tank_status[id] = (tank_status[id] & 0x0F) | TANK_CMD_TARGET_HQ;
+        return;
+    }
+
+    cnt >>= 1;
+    if (cnt >= SECONDS_CNT) {
+        // still fresh - just wander
+        tank_status[id] = (get_random() & 0x03) | TANK_CMD_MOVE;
+        return;
+    }
+
+    // middle ground: go after a player. Even-id tanks prefer player 1,
+    // odd-id tanks prefer player 2 - but fall back to whichever player
+    // still has a tank in play.
+    if (tank_status[0] == 0) {
+        tank_status[id] = (tank_status[id] & 0x0F) | TANK_CMD_TARGET_P2;  // P1 gone
+    } else if ((id & 1) == 0) {
+        tank_status[id] = (tank_status[id] & 0x0F) | TANK_CMD_TARGET_P1;  // even id
+    } else if (tank_status[1] == 0) {
+        tank_status[id] = (tank_status[id] & 0x0F) | TANK_CMD_TARGET_P1;  // P2 gone
+    } else {
+        tank_status[id] = (tank_status[id] & 0x0F) | TANK_CMD_TARGET_P2;  // odd id, P2 alive
+    }
+}
+
 void command_get_random_status(unsigned char id){
-	
+    //temp - temporary byte
+
+    if ((get_random() & 1) == 0) {
+        // 50%: give up on the current direction nudge, pick a fresh AI target
+        get_random_aim(id);
+        return;
+    }
+    // 50%: tweak current direction by +1 or -1 (mod 4), stay in "normal move"
+    if (get_random() & 1) {
+        temp = tank_status[id] + 1;
+    } else {
+        temp = tank_status[id] - 1;
+    }
+    tank_status[id] = (temp & 0x03) | TANK_CMD_MOVE;	
 }
 void command_move(unsigned char id){
     //k - direction
@@ -240,6 +327,16 @@ void command_move(unsigned char id){
     //i - probe x, j - probe y
     //x - block x, y - block y
     unsigned char tmp1, tmp2;
+
+    // Pre-move RNG check: 1/16 chance for aligned enemies to retarget
+    if (id >= 2) {
+        if ((tank_x[id] & 7) == 0 && (tank_y[id] & 7) == 0) {
+            if ((get_random() & 0x0F) == 0) {
+                get_random_aim(id);
+                return;
+            }
+        }
+    }
 
     k = tank_status[id] & 0x03;
     tmp1   = (unsigned char)(dx[k] * 8);  // x_inc*8, wraps signed→byte
@@ -269,8 +366,31 @@ void command_move(unsigned char id){
             return;
         }
     }
-    track_pos[id] ^= 4;  // blocked — animate tracks only
-    // TODO: enemy direction randomisation goes here (id >= 2)	
+    // 3. Collision failed
+    if (id < 2) {
+        // Players: just animate tracks and return
+        track_pos[id] ^= 4;
+        return;
+    }
+    
+
+    if (get_random() & 3) {
+        // 75% chance: Enter "coast" state (Command 8). 
+        // Keeps current direction, pauses movement for ~2 frames.
+        tank_status[id] = (tank_status[id] & 0x0F) | 0x88;
+        track_pos[id] ^= 4; 
+        return;
+    }
+
+    // 25% chance (get_random() & 3 == 0)
+    if ((tank_x[id] & 7) != 0 || (tank_y[id] & 7) != 0) {
+        // Not on an 8x8 tile boundary: Immediate 180-degree reverse
+        tank_status[id] ^= 2;
+        return;
+    }
+    // On a tile boundary: Escalate to Command 9 (Get Random Status/Aim)
+    tank_status[id] = (tank_status[id] & 0x0F) | 0x90;
+    
 }
 
 // Called from handle_tank_status_command() via jump table entry 8 (command nibble $8).
@@ -278,38 +398,90 @@ void command_move(unsigned char id){
 //   tank_status[id] = (tank_status[id] & 0x0F) | 0x80 | 0x08
 // The two bits 2-3 in tank_status act as a 2-bit coast counter (starts at $8 = 0b1000,
 // decremented by 4 each call, stops at 0). This gives ~2 player-rate frames of coasting.
-void command_drift(unsigned char id){
-    // Ice sliding — players only (enemies skip directly to coast logic)
-    if (id < 2 &&
-        (player_ice_status[id] & 0x80) &&       // on ice (bit 7 set)
-        (player_ice_status[id] & 0x7F) != 0) {  // timer not zero
-        --player_ice_status[id];                // count down slide timer
-        track_pos[id] ^= 4;                     // animate tracks while sliding
-        command_move(id);                       // keep moving in current direction
-        return;
+void command_drift(unsigned char id) {
+    // Ice sliding — players only
+    if (id < 2) {
+        if ((player_ice_status[id] & 0x80) && (player_ice_status[id] & 0x7F) != 0) {
+            player_ice_status[id]--;
+            track_pos[id] ^= 4;
+            command_move(id);
+            return;
+        }
     }
-    // coast to stop Each call subtracts 4, stepping: $88 → $84 → $80.
+
+    // Coast counter steps: $x8 → $x4 → $x0, then transition to command_move
     tank_status[id] -= 4;
-    // When bits 2-3 reach zero, tank is fully stopped — reset to $80 (command 8,
-    // dir=0) so next handle_input() call can set a new direction freely.
-    if ((tank_status[id] & 0xC) == 0) {
-        tank_status[id] |= 0x80;
-    }	
+    if ((tank_status[id] & 0x0C) != 0) return;
+
+    // Bits 3-2 reached zero — restore command A (move), keep direction in low nibble
+    tank_status[id] = (tank_status[id] & 0x0F) | 0xA0;
 }
 
-void command_aim_hq(unsigned char id){
-	
+// Picks the new direction/status for a tank based on its position
+// relative to its current AI aim target (ai_x_aim/ai_y_aim).
+unsigned char get_ai_status(unsigned char id) {
+    static const unsigned char ai_status[18] = {
+        0xA0, 0xA0, 0xA0, 0xA1, 0xA0, 0xA3, 0xA2, 0xA2, 0xA2,
+        0xA1, 0xA0, 0xA3, 0xA1, 0xA0, 0xA3, 0xA1, 0xA2, 0xA3
+    };
+    //cnt - id
+    //x, y  - temporary coordinates
+    //k - index in ai table
+
+    cnt = id;  
+    x = tank_x[cnt];
+    if (ai_x_aim == x) {
+        x = 1;
+    } else if (ai_x_aim > x) {
+        x = 2;
+    } else {
+        x = 0;
+    }
+    y = tank_y[cnt];
+    if (ai_y_aim == y) {
+        y = 1;
+    } else if (ai_y_aim > y) {
+        y = 2;
+    } else {
+        y = 0;
+    }
+
+    k = y*3 + x;
+
+    if (cnt < 2) {
+        // player: alternate table half on a time-based coin flip
+        if (((cnt << 1) ^ SECONDS_CNT) & 2) {
+            k += 9;
+        }
+    } else {
+        // enemy: alternate using the RNG instead
+        if (get_random() & 1) {
+            k += 9;
+        }
+    }
+    return ai_status[k];
 }
-void command_aim_player2(unsigned char id){
-	
+
+void command_aim_hq(unsigned char id) {
+    ai_x_aim = 0x78;
+    ai_y_aim = 0xD8;
+    tank_status[id] = get_ai_status(id);
 }
 void command_aim_player1(unsigned char id){
-	
+    ai_x_aim = tank_x[0];
+    ai_y_aim = tank_y[0];
+    tank_status[id] = get_ai_status(id);
 }
+void command_aim_player2(unsigned char id){
+    ai_x_aim = tank_x[1];
+    ai_y_aim = tank_y[1];
+    tank_status[id] = get_ai_status(id);
+}
+
 void command_set_respawn(unsigned char id){
     ++tank_status[id];
     if ((tank_status[id] & 0xF) == 0xE)
-        tank_status[id] = TANK_CMD_RESPAWN_E; // 0xE0
+        tank_status[id] = TANK_CMD_LOAD_TANK; // 0xE0
 }
 
 void load_new_tank(unsigned char id){
@@ -423,62 +595,110 @@ void handle_tank_status_command(unsigned char id){
 }
 
 void render_kill_points(unsigned char id){
-	
+    SPR_PRIORITY = 0;
+    if(tank_type[id] == 0){//player kill don't draw points, just ricochet
+        add_sprite_16x16(tank_x[id], tank_y[id], 0xF1, 3);
+    }
+    else{
+        current_spr_tile_index = ((tank_type[id] >> 3) & 0xFC) + 0xA9;
+        add_sprite_16x16(tank_x[id], tank_y[id], current_spr_tile_index, 3);
+    }
+    SPR_PRIORITY = 0x20;	
 }
+
 void render_small_explode1(unsigned char id){
-	
+    SPR_PRIORITY = 0;
+    add_sprite_16x16(tank_x[id], tank_y[id], 0xF9, 3);
+    SPR_PRIORITY = 0x20;	
 }
 void render_small_explode2(unsigned char id){
-	
+    //i, j - temporary
+    i = tank_status[id] >> 4;
+    j = (7 - i) << 2;
+    current_spr_tile_index = 0xF1 + j;
+    SPR_PRIORITY = 0;
+    add_sprite_16x16(tank_x[id], tank_y[id], current_spr_tile_index, 3);	
+    SPR_PRIORITY = 0x20;
 }
+
+static void set_sprite_index(unsigned char quadrant, unsigned char tank_idx) {
+    //i - base, j - phase
+    i = (quadrant << 2) + 0xD1;
+    j = (tank_status[tank_idx] & 0xF0) - 0x30;
+    j ^= 0x10; 
+    current_spr_tile_index = i + j;
+}
+
+
 void render_big_explode(unsigned char id){
-	
+    //x, y - tank coordinates
+    SPR_PRIORITY = 0;
+    x = tank_x[id];
+    y = tank_y[id];
+
+    set_sprite_index(0, id);
+    add_sprite_16x16(x - 8, y - 8, current_spr_tile_index, 3);	
+
+    set_sprite_index(1, id);
+    add_sprite_16x16(x + 8, y - 8, current_spr_tile_index, 3);	
+
+    set_sprite_index(2, id);
+    add_sprite_16x16(x - 8, y + 8, current_spr_tile_index, 3);	
+
+    set_sprite_index(3, id);
+    add_sprite_16x16(x + 8, y + 8, current_spr_tile_index, 3);    
+    SPR_PRIORITY = 0x20;
 }
 
 void render_respawn(unsigned char id){
+    //cnt - command
+    //temp - temporary
     cnt = tank_status[id] & 0x0F;  // 0..13
     temp = (cnt >= 7) ? (cnt - 7) : (7 - cnt);  // |frame - 7|
     current_spr_tile_index = ((temp << 1) & 0xFC) + 0xA1;
     add_sprite_16x16(tank_x[id], tank_y[id], current_spr_tile_index, 3);
 }
 
-
-
 void render_normal_tank(unsigned char tank_id) {
+    //i - tank id
+    //cnt - pal index
 	static const unsigned char tank_type_pal[8] = {
         2, 0, 0, 1, 2, 1, 2, 2
     };
+    i = tank_id;
     
-    if (tank_id < 2) {// Player tank
-        if (player_blink_timer[tank_id]) {
+    if (i < 2) {// Player tank
+        if (player_blink_timer[i]) {
             // Blink effect: hide sprite every 8 frames
             if (FRAME_CNT & 8) {
                 return;  // Skip drawing this frame
             }
         }
-        pal = tank_id;  // Player 1 = palette 0, Player 2 = palette 1
+        pal = i;  // Player 1 = palette 0, Player 2 = palette 1
     }
     else {// Enemy tank         
-        if (IS_BONUS_TANK(tank_id)) {
+        if (IS_BONUS_TANK(i)) {
             // Bonus tank: alternate between palettes 2 and 3
             pal = ((FRAME_CNT >> 3) & 1) + 2;
         }
         else {
             // Normal enemy: cycle through 8 palettes based on tank type
-            i = ((FRAME_CNT << 2) + tank_type[tank_id]) & 7;
-            pal = tank_type_pal[i];
+            cnt = ((FRAME_CNT << 2) + tank_type[i]) & 7;
+            pal = tank_type_pal[cnt];
         }
     }   
-    current_spr_tile_index = GET_TANK_BASE_TILE(tank_id);
-	current_spr_tile_index += GET_TANK_DIR(tank_id) << 3;
-	current_spr_tile_index += track_pos[tank_id];     
-    add_sprite_16x16(tank_x[tank_id], tank_y[tank_id], current_spr_tile_index, pal);
+    current_spr_tile_index = GET_TANK_BASE_TILE(i);
+	current_spr_tile_index += GET_TANK_DIR(i) << 3;
+	current_spr_tile_index += track_pos[i];     
+    add_sprite_16x16(tank_x[i], tank_y[i], current_spr_tile_index, pal);
 }
 
 
 void render_tank(unsigned char tank_id) {
     typedef void (*tank_handler_func)(unsigned char);
-    
+    //cnt - cmd index
+    //i - tank id
+    //zp variables will be screwed by called functions, but it's allowed - variables be not used twice   
     static const tank_handler_func tank_render_jump_table[16] = {
         skip_handle,           		// 0
         render_kill_points,      	// 1
@@ -497,9 +717,9 @@ void render_tank(unsigned char tank_id) {
         render_respawn,      		// E
         render_respawn      		// F
     };
-    
-    i = GET_TANK_CMD(tank_id);
-    tank_render_jump_table[i](tank_id);
+    i = tank_id;    
+    cnt = GET_TANK_CMD(i);
+    tank_render_jump_table[cnt](i);
 }
 
 
@@ -554,7 +774,7 @@ GameState title_menu_loop(void) {
 	player_ice_status[1] = 0;	
 	tank_x[0] = 0x48;//x on title wont change
 	tank_y[0] = CURSOR_POS_TO_SPR_COORD;
-	tank_status[0] = TANK_CMD_NORMAL | TANK_DIR_RIGHT;
+	tank_status[0] = TANK_CMD_DRIFT | TANK_DIR_RIGHT;
 	tank_type[0] = TANK_TYPE_0;
 	track_pos[0] = 0;
 	player_blink_timer[0] = 0;
@@ -850,36 +1070,6 @@ static void set_enemy_count(){
 }
 
 
-
-static void initialize_tank(unsigned char id){
-    static const unsigned char player_respawn_x[] = {0x58, 0x98};
-    static const unsigned char player_respawn_y[] = {0xD8, 0xD8};
-    static const unsigned char enemy_respawn_x[] = {0x18, 0x78, 0xD8};
-    static const unsigned char enemy_respawn_y[] = {0x18, 0x18, 0x18};
-
-    tank_type[id] = 0;
-    if (id < 2){//player tank
-        tank_x[id] = player_respawn_x[id];
-        tank_y[id] = player_respawn_y[id];
-        player_blink_timer[id] = 0;
-    }
-    else{//enemy tank
-        ++enemy_respawn_place_index;
-        if (enemy_respawn_place_index >= 3){
-            enemy_respawn_place_index = 0;
-        }
-        tank_x[id] = enemy_respawn_x[enemy_respawn_place_index];
-        tank_y[id] = enemy_respawn_y[enemy_respawn_place_index];
-        if (enemy_reinforce_count == 3 || enemy_reinforce_count == 10 || enemy_reinforce_count == 17){
-            tank_type[id] = TANK_BONUS_FLAG;
-            bonus_x = 0; //hide unpicked bonus if bonus tank appears
-        }
-    }
-    tank_status[id] = TANK_CMD_RESPAWN_F;
-    //Draw empty space under tank. In case if level was created from Construction and respawn point is occupied by tsa block
-    write_tsa_to_vram((tank_x[id] >> 3) - 1, (tank_y[id] >> 3) - 1, 0x0F);
-}
-
 static void reset_stage_vars(){
     for(i = 0; i < sizeof(bullet_status); ++i){//hide bullets
         bullet_status[i] = 0;
@@ -992,7 +1182,7 @@ static void handle_input(){
 
     no_input:
         // no button: set command $8 (command_drift) which counts down to stop ice sliding
-        tank_status[cnt] = (tank_status[cnt] & 0x0F) | TANK_CMD_NORMAL | 8;
+        tank_status[cnt] = (tank_status[cnt] & 0x0F) | TANK_CMD_DRIFT | 8;
     }
 }
 
@@ -1022,7 +1212,6 @@ static void handle_all_tanks_commands(){
     }
 }
 
-//todo: оптимизировать
 //Set occupied flag to nametable tile under each tank for collision detection
 //Note: this function looks strange, because it is optimized in C for shorter assembly output
 static void mark_tiles_under_tanks(void) {
@@ -1115,32 +1304,27 @@ static void clear_tiles_under_tanks(void) {
 }
 
 void draw_player_lives(void) {
-    //cnt - player tank id
-    static const unsigned char player_lives_icon[] = {0x14, 0xFF};
-    static const unsigned char lives_tile_y[2] = {0x12, 0x15};
-
-     // P1 life icon at (0x1D, 0x12)
-    add_vram_fill_cmd((unsigned char*)NAMETABLE_A + COORD_TO_NT_OFFSET(0x1D, 0x12), TILE_PLAYER_LIVE, 1);
-    // in 2-player mode draw P2 icon too
-    if (stage_mode == 2 || cursor_pos != 0) {
-        add_vram_fill_cmd((unsigned char*)NAMETABLE_A + COORD_TO_NT_OFFSET(0x1D, 0x15), TILE_PLAYER_LIVE, 1);
+    // P1 icon + lives count
+    add_vram_fill_cmd((unsigned char*)(NAMETABLE_A + COORD_TO_NT_OFFSET(0x1D, 0x12)), TILE_PLAYER_LIVE, 1);
+    set_number_string(player_lives[0] > 0 ? player_lives[0] - 1 : 0);
+    if (player_lives[0] > 10) {
+        add_vram_cpy_based_cmd(NAMETABLE_A + COORD_TO_NT_OFFSET(0x1D, 0x12), &number_string[5], 2, TILE_GREY_DIGIT_BASE);
+    } else {
+        add_vram_cpy_based_cmd(NAMETABLE_A + COORD_TO_NT_OFFSET(0x1E, 0x12), &number_string[6], 1, TILE_GREY_DIGIT_BASE);
     }
-    // draw lives digit
-    for (cnt = 0; cnt <= 1; ++cnt) {
- 
-        if (cnt == 1 && stage_mode != 2 && cursor_pos == 0)
-            break;  // 1-player: skip P2
-        set_number_string(player_lives[cnt] > 0 ? player_lives[cnt] - 1 : 0);
-        k = lives_tile_y[cnt]; 
-        if (player_lives[cnt] > 10) {
-            add_vram_cpy_based_cmd(NAMETABLE_A + COORD_TO_NT_OFFSET(0x1D, k),
-                                   &number_string[5], 2, TILE_GREY_DIGIT_BASE);
-        } else {
-            add_vram_cpy_based_cmd(NAMETABLE_A + COORD_TO_NT_OFFSET(0x1E, k),
-                                   &number_string[6], 1, TILE_GREY_DIGIT_BASE);
-        }
+
+    if (stage_mode != 2 && cursor_pos == 0) return;   // 1-player: skip P2
+
+    // P2 icon + lives count
+    add_vram_fill_cmd((unsigned char*)(NAMETABLE_A + COORD_TO_NT_OFFSET(0x1D, 0x15)), TILE_PLAYER_LIVE, 1);
+    set_number_string(player_lives[1] > 0 ? player_lives[1] - 1 : 0);
+    if (player_lives[1] > 10) {
+        add_vram_cpy_based_cmd(NAMETABLE_A + COORD_TO_NT_OFFSET(0x1D, 0x15), &number_string[5], 2, TILE_GREY_DIGIT_BASE);
+    } else {
+        add_vram_cpy_based_cmd(NAMETABLE_A + COORD_TO_NT_OFFSET(0x1E, 0x15), &number_string[6], 1, TILE_GREY_DIGIT_BASE);
     }
 }
+
 // Alternates BkgPal_Number between 1 and 2 every 32 frames.
 // NMI handler loads the corresponding background palette each frame.
 void swap_water_pal_colors(void) {
@@ -1512,18 +1696,17 @@ static void handle_bullet_bg_collisions(void) {
 
 
 
-//todo: оптимизировать abs_diff?
-
-// Helper: unsigned absolute difference
-static unsigned char abs_diff(unsigned char a, unsigned char b) {
-    return (a > b) ? a - b : b - a;
-}
+#define ABS_DIFF(a, b) ( \
+    temp = (a) - (b), \
+    (temp & 0x80) ? (unsigned char)(0 - temp) : temp \
+)
 
 // Process bullet-tank collisions (called once per frame)
 static void handle_bullet_tank_collisions(void) {
     // i - tank id
     // j - bullet id
     // cnt - tank type index
+    // temp - temporary for calculating abs_diff
 
     // ---------- Phase 1: Enemy bullets vs Players ----------
     // t = 1 (player 2), then 0 (player 1)
@@ -1537,8 +1720,8 @@ static void handle_bullet_tank_collisions(void) {
                 continue;                 // not flying
 
             // Collision if both axes differ by less than 10 pixels
-            if (abs_diff(bullet_x[j], tank_x[i]) >= 10) continue;
-            if (abs_diff(bullet_y[j], tank_y[i]) >= 10) continue;
+            if (ABS_DIFF(bullet_x[j], tank_x[i]) >= 10) continue;
+            if (ABS_DIFF(bullet_y[j], tank_y[i]) >= 10) continue;
 
             // Hit → start ricochet animation
             bullet_status[j] = 0x33;
@@ -1570,8 +1753,8 @@ static void handle_bullet_tank_collisions(void) {
             if ((j & 6) != 0) continue;
             if ((bullet_status[j] & 0xF0) != 0x40) continue;
 
-            if (abs_diff(bullet_x[j], tank_x[i]) >= 10) continue;
-            if (abs_diff(bullet_y[j], tank_y[i]) >= 10) continue;
+            if (ABS_DIFF(bullet_x[j], tank_x[i]) >= 10) continue;
+            if (ABS_DIFF(bullet_y[j], tank_y[i]) >= 10) continue;
 
             // Collision
             bullet_status[j] = 0x33;
@@ -1618,8 +1801,8 @@ static void handle_bullet_tank_collisions(void) {
             if (((i ^ j) & 1) == 0) continue;    // skip own bullet
             if ((bullet_status[j] & 0xF0) != 0x40) continue;
 
-            if (abs_diff(bullet_x[j], tank_x[i]) >= 10) continue;
-            if (abs_diff(bullet_y[j], tank_y[i]) >= 10) continue;
+            if (ABS_DIFF(bullet_x[j], tank_x[i]) >= 10) continue;
+            if (ABS_DIFF(bullet_y[j], tank_y[i]) >= 10) continue;
 
             // Collision → ricochet
             bullet_status[j] = 0x33;
@@ -1635,6 +1818,27 @@ static void handle_bullet_tank_collisions(void) {
                 continue;
             // Set new grace period
             player_blink_timer[i] = 0xC8;
+        }
+    }
+}
+
+// Process bullet-vs-bullet collisions (called once per frame)
+// Two enemy bullets never check against each other.
+static void handle_bullet_bullet_collisions(void) {
+    for (i = 9; i != 0xFF; --i) {
+        if ((i & 6) != 0) continue;                        // only 0,1,8,9 act as bullet A
+        if ((bullet_status[i] & 0xF0) != 0x40) continue;   // A not flying
+
+        for (j = 9; j != 0xFF; --j) {
+            if ((j & 7) == (i & 7)) continue;               // self (aliased 0/8, 1/9)
+            if ((bullet_status[j] & 0xF0) != 0x40) continue; // B not flying
+
+            if (ABS_DIFF(bullet_x[j], bullet_x[i]) >= 6) continue;
+            if (ABS_DIFF(bullet_y[j], bullet_y[i]) >= 6) continue;
+
+            // Bullets collided - destroy both
+            bullet_status[i] = 0;
+            bullet_status[j] = 0;
         }
     }
 }
@@ -1703,7 +1907,7 @@ static void handle_gameplay(){
     //make_enemy_shot();
     handle_enemy_respawn();
     handle_bullet_bg_collisions();
-    //handle_bullet_bullet_collisions();
+    handle_bullet_bullet_collisions();
     handle_bullet_tank_collisions();
     //handle_bonuses();
     gameover_str_handle();
