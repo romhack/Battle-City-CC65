@@ -233,10 +233,11 @@ EXTERN unsigned char respawn_delay;
 EXTERN unsigned char invincible_timer[2];
 #pragma zpsym("invincible_timer")
 
-EXTERN unsigned char bonus_x, bonus_y, bonus_number;
+EXTERN unsigned char bonus_x, bonus_y, bonus_number, bonus_timer;
 #pragma zpsym("bonus_x")
 #pragma zpsym("bonus_y")
 #pragma zpsym("bonus_number")
+#pragma zpsym("bonus_timer")
 
 EXTERN unsigned char ai_x_aim, ai_y_aim;
 #pragma zpsym("ai_x_aim")
@@ -289,7 +290,7 @@ EXTERN unsigned char tank_type[8];
 
 EXTERN unsigned char track_pos[8];
 #pragma zpsym("track_pos")
-
+//Life can be obtained only once per game if player earns 200,000 points ; if not zero - player already received extra life
 EXTERN unsigned char player_add_life_flag[2];
 #pragma zpsym("player_add_life_flag")
 

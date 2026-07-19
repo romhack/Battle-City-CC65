@@ -13,6 +13,9 @@ static unsigned char gameover_str_y;
 static unsigned char gameover_scroll_dir;
 static unsigned char gameover_str_timer;
 static unsigned char staff_string_ram[16];
+// number_string layout: indices 0-7, digits 0-9, 0xFF = sentinel/end
+// Score strings (hiscore_1p_string, hiscore_2p_string): same 8-byte BCD format
+// Scores indexed: player 0 → hiscore_1p_string, player 1 → hiscore_2p_string
 static unsigned char hiscore_1p_string[8];
 static unsigned char hiscore_2p_string[8];
 static unsigned char hiscore_string[8];
@@ -216,7 +219,7 @@ static void initialize_tank(unsigned char id){
 }
 
 void command_explode(unsigned char id){
-    //temp
+    //temp - temporary
     tank_status[id]--;
     if ((tank_status[id] & 0x0F) != 0) 
         return;//animation frame decremented, no additional actions needed
@@ -1189,12 +1192,11 @@ static void handle_input(){
 static void handle_all_tanks_commands(){
     //specifically don't take zp variable, because further commands can have complex functions
     unsigned char id;
+
+    if (enemy_freeze_timer != 0 && (FRAME_CNT & 63) == 0) {
+        --enemy_freeze_timer;
+    }
     for (id = 7; id != 0xFF; --id) {
-
-        if (enemy_freeze_timer != 0 && (FRAME_CNT & 63) == 0) {
-            --enemy_freeze_timer;
-        }
-
         if (id < 2) {
             if ((FRAME_CNT & 1) == 0 && (FRAME_CNT & 3) != 0)
                 continue;//Process statuses on specific frames: 0, 4, 8, 12
@@ -1693,6 +1695,66 @@ static void handle_bullet_bg_collisions(void) {
     }
 }
 
+// Encodes a score value into number_string for use by add_score.
+// Nibble encoding: high nibble = hundreds digit, low nibble = tens digit.
+// Special case: value 0 means 1000 points (digit 1 at index 3).
+void num_to_num_string(unsigned char value) {
+
+    init_8_char_string(number_string);
+    if (value == 0) {
+        number_string[3] = 1;   // 1000 points
+        return;
+    }
+    number_string[5] = value & 0x0F;         // ones/tens digit
+    number_string[4] = (value >> 4) & 0x0F; // hundreds digit
+}
+
+// Adds number_string into the player's score string, digit by digit with carry.
+void add_score(unsigned char player_id) {
+    //dst - pointer to filling hiscore string
+    //temp - carry
+    //cnt - char index
+    //x - sum
+    dst = (player_id == 0) ? hiscore_1p_string : hiscore_2p_string;
+    temp = 0;
+    
+    // The score is stored as individual decimal digits (0-9) in an 8-byte array.
+    // The lowest digit (ones place) is at index 6. 
+    // We add from right to left (index 6 down to 0) to handle carries properly.
+    for (cnt = 7; cnt-- != 0; ) {
+        x = number_string[cnt] + dst[cnt] + temp;
+        if (x >= 10) {
+            x -= 10;
+            temp = 1;
+        } else {
+            temp = 0;
+        }
+        dst[cnt] = x;
+    }
+}
+// Awards an extra life to any player whose score has reached 200,000.
+// Checks both players every call; player_add_life_flag prevents duplicates.
+void add_life() {
+    if (hq_status != 0x80) return;  // HQ destroyed — no bonus lives
+
+    // Player 1
+    if (player_add_life_flag[0] == 0 && hiscore_1p_string[2] >= 2) {
+        player_lives[0]++;
+        player_add_life_flag[0] = 1;
+        //snd_ancillary_life1 = 1; //TODO: implement with sound engine
+        //snd_ancillary_life2 = 1;
+        return;
+    }
+
+    // Player 2 (only in 2-player mode)
+    if (cursor_pos == 0) return;
+    if (player_add_life_flag[1] != 0) return;
+    if (hiscore_2p_string[2] < 2) return;
+    player_lives[1]++;
+    player_add_life_flag[1] = 1;
+    //snd_ancillary_life1 = 1;//TODO: implement with sound engine
+    //snd_ancillary_life2 = 1;
+}
 
 
 
@@ -1701,12 +1763,164 @@ static void handle_bullet_bg_collisions(void) {
     (temp & 0x80) ? (unsigned char)(0 - temp) : temp \
 )
 
+static void render_bonus(void) {
+    if (bonus_x == 0) return; // No bonus on screen
+    
+    if (bonus_timer != 0) {
+        // Bonus was taken, draw the 500 points score and count down the timer
+        --bonus_timer;
+        if (bonus_timer == 0) {
+            bonus_x = 0; // Clear bonus completely from memory after score disappears
+            return;
+        }
+        // Draw 500 points sprite
+        current_spr_tile_index = 0x3B; // Tile index for '500'
+        pal = 2;
+        SPR_PRIORITY = 0; // In front of background
+        add_sprite_16x16(bonus_x, bonus_y, current_spr_tile_index, pal);
+        SPR_PRIORITY = 0x20;
+    } else {
+        // Bonus not yet taken, draw the blinking bonus item
+        if ((FRAME_CNT & 8) == 0) return; // Blink effect: hide sprite every 8 frames
+        
+        // 4 tiles per bonus icon, base offset 0x81
+        current_spr_tile_index = (bonus_number << 2) + 0x81; 
+        pal = 2;
+        SPR_PRIORITY = 0;
+        add_sprite_16x16(bonus_x, bonus_y, current_spr_tile_index, pal);
+        SPR_PRIORITY = 0x20;
+    }
+}
+
+static void bonus_helmet() {
+    invincible_timer[i] = 10;
+}
+
+static void bonus_watch() {
+    enemy_freeze_timer = 10;
+}
+
+static void bonus_shovel() {
+    if (hq_status & 0x80) {  // HQ still standing (bit 7 set = intact)
+        draw_armoured_hq();
+        hq_armor_timer = 20;
+    }
+}
+
+static void bonus_star() {
+    if (player_type[i] == 0x60) return;  // already max type
+    player_type[i] += 0x20;
+    tank_type[i] = player_type[i];
+}
+
+static void bonus_grenade() {
+    //cnt - iterator
+    //snd_enemy_explode = 1;//TODO: implement with sound engine
+    for (cnt = 7; cnt >= 2; --cnt) {
+        if (tank_status[cnt] >= 0x80 && tank_status[cnt] < 0xE0) {
+            tank_status[cnt] = 0x73;
+            tank_type[cnt] = 0;
+        }
+    }
+}
+
+static void bonus_life() {
+    player_lives[i]++;
+    //snd_ancillary_life1 = 1;//TODO: implement with sound engine
+    //snd_ancillary_life2 = 1;
+}
+
+static void bonus_pistol() {
+    // Not used — has an icon but does nothing
+}
+
+//Handle bonus pickup effect
+void handle_bonus(void){
+    //i is set as tank index
+    //all other zp variables should be available now for any of commands
+    typedef void (*bonus_handler_func)(void);
+    static const bonus_handler_func bonus_jump_table[] = {
+        bonus_helmet,
+        bonus_watch,
+        bonus_shovel,
+        bonus_star,
+        bonus_grenade,
+        bonus_life,
+        bonus_pistol,
+    };
+    bonus_jump_table[bonus_number]();
+}
+
+void handle_bonus_collision(void) {
+    //i - tank index. Will be also used as tank index by all handling functions
+
+    if (bonus_x == 0) return;        // no active bonus on screen
+    if (bonus_timer != 0) return;    // points display still running
+
+    // Check players 1 then 0 (loop counts down from 1)
+    for (i = 1; i != 0xFF; --i) {
+        if (tank_status[i] < 0x80) continue;         // not active
+        if (tank_status[i] >= 0xE0) continue;        // exploding/respawning
+        
+        if (ABS_DIFF(tank_x[i], bonus_x) >= 0x0C) continue;
+        if (ABS_DIFF(tank_y[i], bonus_y) >= 0x0C) continue;
+
+        // Collision confirmed
+        bonus_timer = 0x32;  // show score for 50 frames
+
+        if (bonus_number & 0x80) return;  // bit 7 = newly spawned, not yet active
+
+        if (stage_mode != STAGE_MODE_DEMO) {
+            num_to_num_string(0x50);           // 500 points
+            add_score(i);
+            add_life();
+            //snd_bonus_taken = 1; TODO: implement with sound engine
+        }
+        handle_bonus();
+        return;
+    }
+}
+
+
+// Multiply_Bonus_Coord maps RNG (0..3) to screen coordinates: 48, 96, 144, 192
+// Formula: (val + 1) * 48
+static unsigned char multiply_bonus_coord(unsigned char n) {
+    //i - temp accumulator
+    i = n;
+    i = i << 1;
+    i += n;     // n*3
+    i = i << 1; // n*6
+    i += 6;
+    i = i << 3; // (n*6+6)*8
+    return i;
+}
+
+static void bonus_appear_handle(void) {
+    static const unsigned char BonusNumberTable[8] = { 0, 1, 2, 3, 4, 5, 4, 3 };
+
+    //snd_bonus_appears = 1;//TODO: implement with sound engine
+    do {
+        bonus_x = multiply_bonus_coord(get_random() & 3);
+        bonus_y = multiply_bonus_coord(get_random() & 3);
+        //bonus cannot appear under player
+        //make fake bonus and check if one of players taken it, if so, get new coordinates
+        bonus_number = 0xFF;
+        bonus_timer = 0;
+        handle_bonus_collision();
+    } while (bonus_timer != 0);
+
+    bonus_number = BonusNumberTable[get_random() & 7];
+    bonus_timer = 0;
+}
+
 // Process bullet-tank collisions (called once per frame)
 static void handle_bullet_tank_collisions(void) {
     // i - tank id
     // j - bullet id
     // cnt - tank type index
     // temp - temporary for calculating abs_diff
+    // k - temporary storage for i
+    static const unsigned char EnemyKillScore[] = { 0x10, 0x20, 0x30, 0x40 };
 
     // ---------- Phase 1: Enemy bullets vs Players ----------
     // t = 1 (player 2), then 0 (player 1)
@@ -1761,7 +1975,10 @@ static void handle_bullet_tank_collisions(void) {
 
             // Bonus tank → spawn item (to be implemented)
             if (tank_type[i] & 4) {
-                // bonus_appear_handle();
+                //i will be modified by underlying functions of bonus_appear_handle
+                k = i;
+                bonus_appear_handle();
+                i = k;
             }
 
             // Tank has armour? Reduce it, tank survives
@@ -1773,7 +1990,7 @@ static void handle_bullet_tank_collisions(void) {
 
             // No armour → destroy enemy
             tank_status[i] = 0x73;
-            // snd_enemy_explode = 1;
+            // snd_enemy_explode = 1;//TODO:implement with sound engine
 
             if (stage_mode != STAGE_MODE_DEMO) {
                 cnt = (tank_type[i] >> 5) & 7; // 0..7
@@ -1783,8 +2000,9 @@ static void handle_bullet_tank_collisions(void) {
                 } else {
                     ++killcount_1p[cnt];
                 }
-                // add_score(b & 1, enemy_kill_score[type]);
-                // add_life(b & 1);
+                num_to_num_string(EnemyKillScore[cnt]);
+                add_score(i);
+                add_life();
             }
             break;   // enemy destroyed – don't check other bullets against same tank
         }
@@ -1909,7 +2127,7 @@ static void handle_gameplay(){
     handle_bullet_bg_collisions();
     handle_bullet_bullet_collisions();
     handle_bullet_tank_collisions();
-    //handle_bonuses();
+    handle_bonus_collision();
     gameover_str_handle();
     //play_snd_move();//TODO:implement on sound engine
     draw_player_lives();
@@ -1946,6 +2164,7 @@ GameState gameplay_loop(void) {
         pad_poll(0);
         pad_poll(1);
         handle_gameplay();
+        render_bonus();
         for(id = 0; id < 8; ++id){
             render_tank(id);    // draw spawn ring / tank
         }
