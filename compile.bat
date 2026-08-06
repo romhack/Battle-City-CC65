@@ -6,7 +6,7 @@ cls
 REM Configuration
 set src=src
 set name=main
-set config=nrom_16k_horz.cfg
+set config=nrom_32k_horz.cfg
 
 REM Create BUILD directory if it doesn't exist
 if not exist build mkdir build

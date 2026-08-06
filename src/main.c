@@ -1,7 +1,6 @@
 /*	Battle City implemented in C
  *	using neslib
  */	
-#include "../lib/neslib.h"
 #include "globals.h" 
 #include "../game.h"
 #include "util.h"
@@ -134,16 +133,16 @@ void draw_title_screen(void){
 	draw_brick_str(battle_string, 0x1A, 0x2E);
 	draw_brick_str(city_string, 0x3C, 0x56);
 	draw_str(one_string, 2, 3, 0);
-	temp = skip_leading_zeros(hiscore_1p_string);
+	temp = skip_leading_zeros(hiscore_1p_string, 0);
 	draw_str(&hiscore_1p_string[temp], 3 + temp, 3, 0x30);
 	
 	draw_str(hi_string, 0xB, 3, 0);
-	temp = skip_leading_zeros(hiscore_string);
+	temp = skip_leading_zeros(hiscore_string, 0);
 	draw_str(&hiscore_string[temp], 0xD + temp, 3, 0x30);
 	
 	if (cursor_pos != 0){// If cursor at RESET wasn't at 1 player position, need to draw 2nd player data. TODO: isColdBoot better?
 		draw_str(two_string, 0x15, 3, 0);	
-		temp = skip_leading_zeros(hiscore_2p_string);
+		temp = skip_leading_zeros(hiscore_2p_string, 0);
 		draw_str(&hiscore_2p_string[temp], 0x14 + temp, 3, 0x30);
 	}
 	draw_str(one_player_string, 0xB, 0x11, 0);
@@ -258,8 +257,8 @@ void command_explode(unsigned char id){
         if (player_lives[1] == 0)
             return;
         //here player 1 has no lives, but player 2 has lives, draw gameover for player 1 only    
-        gameover_scroll_dir = 1;
-        gameover_str_x = 0xC0;
+        gameover_scroll_dir = 3;
+        gameover_str_x = 0x20;
     }
     initialize_gameover();	
 }
@@ -759,6 +758,25 @@ static void render_bullets(void) {
                 break;
         }
     }
+}
+static void render_pause(void) {
+    if (pause_flag == 0) return;
+    
+    // Blink effect: hide every 16 frames
+    if ((FRAME_CNT & 0x10) == 0) return; 
+    
+    pal = 3;
+    SPR_PRIORITY = 0; // In front of background
+    
+    // Draw "PAUSE" using 5 individual 8x16 sprites
+    // Tiles: P=0x17, A=0x19, U=0x1B, S=0x1D, E=0x1F
+    add_sprite(0x64, 0x80, 0x17, pal); // P
+    add_sprite(0x6C, 0x80, 0x19, pal); // A
+    add_sprite(0x74, 0x80, 0x1B, pal); // U
+    add_sprite(0x7C, 0x80, 0x1D, pal); // S
+    add_sprite(0x84, 0x80, 0x1F, pal); // E
+    
+    SPR_PRIORITY = 0x20;
 }
 
 
@@ -1380,15 +1398,22 @@ static void make_shot() {
 
     // Set speed / armor based on tank type (upper 4 bits)
     temp = tank_type[i] & 0xF0;
-    if (temp == TANK_TYPE_0) return;          // normal tank
-    if (temp == TANK_TYPE_6) {
-        bullet_property[i] = 0x01;  // fast
-    } else if (temp == TANK_TYPE_3) {
-        bullet_property[i] = 0x03;  // armor-piercing
-    } else if (temp & 0x80) {
-        //TODO: implement bonus tank double-shot
-        //bonus_pistol_shot(i);  
+    
+    // Types 0, 4, 5, 7 ($00, $80, $A0, $E0) all fire normal bullets.
+    // We merge the 0x00 check and the 0x80 bit check here.
+    if (temp == 0x00 || (temp & 0x80)) {
+        return; 
     }
+    
+    // Type 3 ($60) fires fast, armor-piercing bullets (property 3)
+    if (temp == 0x60) {
+        bullet_property[i] = 0x03;
+        return;
+    }
+    
+    // Types 1, 2, 6 ($20, $40, $C0) fire fast bullets (property 1)
+    // This acts as the fall-through for any remaining types.
+    bullet_property[i] = 0x01;
 }
 
 static void make_player_shot(void) {
@@ -1411,6 +1436,21 @@ static void make_player_shot(void) {
             bullet_status[i]        = 0;
         }
         make_shot();   
+    }
+}
+static void make_enemy_shot(void) {
+    // Enemies cannot shoot if frozen by the watch bonus
+    if (enemy_freeze_timer != 0) 
+        return;
+    // Iterate through enemy tank slots (7 down to 2)
+    for (i = 7; i >= 2; --i) {
+        // Skip if tank is exploding (< 0x80) or spawning (>= 0xE0)
+        if (tank_status[i] < 0x80 || tank_status[i] >= 0xE0)
+            continue;        
+        // 1/32 chance to fire a bullet each frame
+        if ((get_random() & 0x1F) != 0)
+            continue;        
+        make_shot();
     }
 }
 
@@ -2001,7 +2041,7 @@ static void handle_bullet_tank_collisions(void) {
                     ++killcount_1p[cnt];
                 }
                 num_to_num_string(EnemyKillScore[cnt]);
-                add_score(i);
+                add_score(j & 1); //bullets odd for player 1, even for player 2
                 add_life();
             }
             break;   // enemy destroyed – don't check other bullets against same tank
@@ -2027,7 +2067,7 @@ static void handle_bullet_tank_collisions(void) {
 
             // Invincible shield? Bullet disappears completely
             if (invincible_timer[i] != 0) {
-                bullet_status[i] = 0;
+                bullet_status[j] = 0;
                 continue;
             }
 
@@ -2066,20 +2106,22 @@ static void gameover_str_handle(void) {
     //temp - old pal
 
     //Don't show game over on bonus level or if timer is not set
-    if (gameover_str_timer == 0 || stage_mode == 2) 
+    if (gameover_str_timer == 0 || stage_mode == STAGE_MODE_DEMO) 
         return;
-    if (FRAME_CNT & 0x0F){//decrease timer every 16 frames
+    if ((FRAME_CNT & 0x0F) == 0) {
         --gameover_str_timer;
-        if (gameover_str_timer == 0){
-            gameover_str_y = 0xF0;//if finished, hide string
+        if (gameover_str_timer == 0) {
+            gameover_str_y = 0xF0;//if finished, hide gamover string
         }
     }
     if (gameover_str_timer >= 10){//scroll until its 10 cycles left
         gameover_str_x += dx[gameover_scroll_dir];
         gameover_str_y += dy[gameover_scroll_dir];
     }
+    SPR_PRIORITY = 0;
     add_sprite_16x16(gameover_str_x, gameover_str_y, 0x79, 3);// left half of "GAME OVER"
     add_sprite_16x16(gameover_str_x + 16, gameover_str_y, 0x7D, 3);// right half
+    SPR_PRIORITY = 0x20;
 }
 
 static void handle_enemy_respawn(void) {
@@ -2110,6 +2152,506 @@ static void handle_enemy_respawn(void) {
     buffer_and_vram_fill(COORD_TO_NT_OFFSET(x, y), TILE_GREY, 1);
 }
 
+
+// Draws the static frame of the points screen: HI-SCORE, STAGE n,
+// I-PLAYER/II-PLAYER + running totals, arrows, PTS labels and the
+// TOTAL line.
+static void draw_pts_screen_template(void)
+{
+    //cnt - length
+    //k - offset from string start
+    /* Original string data */
+    static const unsigned char hi_score_label[] = "HIkSCORE"; // 'k' = '-' glyph
+    static const unsigned char stage_label[] = "STAGE";
+    static const unsigned char p1_label[] = "^kPLAYER"; // '^'=I  'k'=-  -> "I-PLAYER"
+    static const unsigned char p2_label[] = "_kPLAYER"; // '_'=II         -> "II-PLAYER"
+    static const unsigned char pts_label[] = "PTS";
+    static const unsigned char total_label[] = "TOTAL";
+    static const unsigned char line_label[] = {
+        0x5C, 0x5C, 0x5C, 0x5C, 0x5C, 0x5C, 0x5C, 0x5C   /* aLine */
+    };
+
+    ppu_wait_nmi();
+    scroll(0, 0);
+    set_bg_pal_number(3);
+
+    ppu_off();
+
+    /* Null_NT_Buffer */
+    memfill(SCREEN_BUFFER, 0, 1024);
+
+    /* Fill_Attrib_Table */
+    memfill(SCREEN_BUFFER + 0x3C0, 0x50, 4);
+    memfill(SCREEN_BUFFER + 0x3C4, 0xA0, 4);
+    memfill(SCREEN_BUFFER + 0x3C8, 0x50, 3);
+    memfill(SCREEN_BUFFER + 0x3CD, 0x50, 3);
+    memfill(SCREEN_BUFFER + 0x3D0, 0x0A, 3);
+    memfill(SCREEN_BUFFER + 0x3D5, 0x0A, 3);
+
+    SCREEN_BUFFER[0x3F0] = 0x05;
+    SCREEN_BUFFER[0x3F1] = 0x05;
+    SCREEN_BUFFER[0x3F2] = 0x05;
+    SCREEN_BUFFER[0x3F5] = 0x05;
+    SCREEN_BUFFER[0x3F6] = 0x05;
+    SCREEN_BUFFER[0x3F7] = 0x05;
+
+    vram_adr(NAMETABLE_B);
+    vram_write(SCREEN_BUFFER, 1024);
+
+    /* Set_PPU */
+    set_ppu();
+    scroll(0, 0);
+
+    /*
+        Draw:
+        HIkSCORE
+        high score digits
+    */
+    add_vram_cpy_cmd(NAMETABLE_B + COORD_TO_NT_OFFSET(8, 3), hi_score_label, sizeof(hi_score_label) - 1);
+
+    k = skip_leading_zeros(hiscore_string, 1);
+    cnt = 0;
+    while (hiscore_string[k + cnt] != 0xFF) {
+        ++cnt;
+    }
+
+    add_vram_cpy_based_cmd(NAMETABLE_B + COORD_TO_NT_OFFSET(0x11 + k, 3), &hiscore_string[k], cnt, 0x30);
+
+    /*
+        Draw:
+        STAGE
+        stage number
+    */
+    add_vram_cpy_cmd(NAMETABLE_B + COORD_TO_NT_OFFSET(0x0C, 5), stage_label, sizeof(stage_label) - 1);
+
+    set_number_string(stage_number);
+
+    k = skip_leading_zeros(number_string, 1);
+
+    cnt = 0;
+    while (number_string[k + cnt] != 0xFF) {
+        ++cnt;
+    }
+
+    add_vram_cpy_based_cmd(NAMETABLE_B + COORD_TO_NT_OFFSET(0x0D + k, 5), &number_string[k], cnt, 0x30);
+
+    ppu_wait_nmi();
+    ppu_mask(MASK_SHOW_ALL);
+
+    /*
+        Draw:
+        I-PLAYER
+        player 1 score
+    */
+    add_vram_cpy_cmd(NAMETABLE_B + COORD_TO_NT_OFFSET(3, 7), p1_label, sizeof(p1_label) - 1);
+
+    k = skip_leading_zeros(hiscore_1p_string, 1);
+    cnt = 0;
+    while (hiscore_1p_string[k + cnt] != 0xFF) {
+        ++cnt;
+    }
+
+    add_vram_cpy_based_cmd(
+        NAMETABLE_B + COORD_TO_NT_OFFSET(4 + k, 9),
+        &hiscore_1p_string[k],
+        cnt,
+        0x30
+    );
+
+    /* Arrow_Left x4 */
+    add_vram_fill_cmd(
+        (unsigned char *)(NAMETABLE_B + COORD_TO_NT_OFFSET(0x0E, 0x0C)),
+        0x5B,
+        1
+    );
+    add_vram_fill_cmd(
+        (unsigned char *)(NAMETABLE_B + COORD_TO_NT_OFFSET(0x0E, 0x0F)),
+        0x5B,
+        1
+    );
+    add_vram_fill_cmd(
+        (unsigned char *)(NAMETABLE_B + COORD_TO_NT_OFFSET(0x0E, 0x12)),
+        0x5B,
+        1
+    );
+    add_vram_fill_cmd(
+        (unsigned char *)(NAMETABLE_B + COORD_TO_NT_OFFSET(0x0E, 0x15)),
+        0x5B,
+        1
+    );
+    //Draw second player, if it was 2p game
+    if (cursor_pos != 0) {
+        ppu_wait_nmi();
+
+        /*
+            Draw:
+            II-PLAYER
+            player 2 score
+        */
+        add_vram_cpy_cmd(
+            NAMETABLE_B + COORD_TO_NT_OFFSET(0x15, 7),
+            p2_label,
+            sizeof(p2_label) - 1
+        );
+
+        k = skip_leading_zeros(hiscore_2p_string, 1);
+        cnt = 0;
+        while (hiscore_2p_string[k + cnt] != 0xFF) {
+            ++cnt;
+        }
+
+        add_vram_cpy_based_cmd(
+            NAMETABLE_B + COORD_TO_NT_OFFSET(0x16 + k, 9),
+            &hiscore_2p_string[k],
+            cnt,
+            0x30
+        );
+
+        /* Arrow_Right x4 */
+        add_vram_fill_cmd(
+            (unsigned char *)(NAMETABLE_B + COORD_TO_NT_OFFSET(0x11, 0x0C)),
+            0x5D,
+            1
+        );
+        add_vram_fill_cmd(
+            (unsigned char *)(NAMETABLE_B + COORD_TO_NT_OFFSET(0x11, 0x0F)),
+            0x5D,
+            1
+        );
+        add_vram_fill_cmd(
+            (unsigned char *)(NAMETABLE_B + COORD_TO_NT_OFFSET(0x11, 0x12)),
+            0x5D,
+            1
+        );
+        add_vram_fill_cmd(
+            (unsigned char *)(NAMETABLE_B + COORD_TO_NT_OFFSET(0x11, 0x15)),
+            0x5D,
+            1
+        );
+    }
+
+    ppu_wait_nmi();
+
+    /* PTS left column */
+    add_vram_cpy_cmd(
+        NAMETABLE_B + COORD_TO_NT_OFFSET(8, 0x0C),
+        pts_label,
+        sizeof(pts_label) - 1
+    );
+    add_vram_cpy_cmd(
+        NAMETABLE_B + COORD_TO_NT_OFFSET(8, 0x0F),
+        pts_label,
+        sizeof(pts_label) - 1
+    );
+    add_vram_cpy_cmd(
+        NAMETABLE_B + COORD_TO_NT_OFFSET(8, 0x12),
+        pts_label,
+        sizeof(pts_label) - 1
+    );
+    add_vram_cpy_cmd(
+        NAMETABLE_B + COORD_TO_NT_OFFSET(8, 0x15),
+        pts_label,
+        sizeof(pts_label) - 1
+    );
+
+    /* PTS right column only in 2-player mode */
+    if (cursor_pos != 0) {
+        ppu_wait_nmi();
+
+        add_vram_cpy_cmd(
+            NAMETABLE_B + COORD_TO_NT_OFFSET(0x1A, 0x0C),
+            pts_label,
+            sizeof(pts_label) - 1
+        );
+        add_vram_cpy_cmd(
+            NAMETABLE_B + COORD_TO_NT_OFFSET(0x1A, 0x0F),
+            pts_label,
+            sizeof(pts_label) - 1
+        );
+        add_vram_cpy_cmd(
+            NAMETABLE_B + COORD_TO_NT_OFFSET(0x1A, 0x12),
+            pts_label,
+            sizeof(pts_label) - 1
+        );
+        add_vram_cpy_cmd(
+            NAMETABLE_B + COORD_TO_NT_OFFSET(0x1A, 0x15),
+            pts_label,
+            sizeof(pts_label) - 1
+        );
+    }
+
+    ppu_wait_nmi();
+
+    /* Line above TOTAL */
+    add_vram_cpy_cmd(
+        NAMETABLE_B + COORD_TO_NT_OFFSET(0x0C, 0x16),
+        line_label,
+        sizeof(line_label)
+    );
+
+    /* TOTAL */
+    add_vram_cpy_cmd(
+        NAMETABLE_B + COORD_TO_NT_OFFSET(6, 0x17),
+        total_label,
+        sizeof(total_label) - 1
+    );
+}
+
+static void draw_tank_column(void)
+{
+    add_sprite_16x16(0x81, 0x64, 0x80, 2);
+    add_sprite_16x16(0x81, 0x7C, 0xA0, 2);
+    add_sprite_16x16(0x81, 0x94, 0xC0, 2);
+    add_sprite_16x16(0x81, 0xAC, 0xE0, 2);
+}
+static void draw_tank_column_xtimes(unsigned char count)
+{
+    while (count != 0) {
+        ppu_wait_nmi();
+        draw_tank_column();
+        --count;
+    }
+}
+
+static void draw_score_digits(
+    const unsigned char *str,
+    unsigned char base_x,
+    unsigned char y)
+{
+    //cnt - length
+    //k - offset from string start
+
+    k = skip_leading_zeros(str, 1);
+    cnt = 0;
+    while (str[k + cnt] != 0xFF) {
+        ++cnt;
+    }
+
+    if (cnt != 0) {
+        add_vram_cpy_based_cmd(
+            NAMETABLE_B + COORD_TO_NT_OFFSET(base_x + k, y),
+            &str[k],
+            cnt,
+            0x30
+        );
+    }
+}
+
+static void add_number_to_temp_string(unsigned char *dst)
+{
+    //cnt - sum
+    //k - carry flag
+    //x - index of char in string
+
+    k = 0;
+    for (x = 6; x != 0xFF; --x) {
+        cnt = number_string[x] + dst[x] + k;
+
+        if (cnt >= 10) {
+            cnt -= 10;
+            k = 1;
+        } else {
+            k = 0;
+        }
+
+        dst[x] = cnt;
+    }
+}
+
+static void draw_pts_screen(void)
+{
+    //i - tank id
+    //j - row number
+    //temp - end count flag
+    //y - type index
+
+    static const unsigned char tank_kill_pts[4] = {
+        0x10, 0x20, 0x30, 0x40
+    };
+
+    static const unsigned char bonus_label[] = {
+        0x42, 0x4F, 0x4E, 0x55, 0x53, 0x15
+    };
+
+    static const unsigned char pts_label[] = "PTS";
+
+    static unsigned char temp_1p_pts_string[8];
+    static unsigned char temp_2p_pts_string[8];
+
+    unsigned char total_kills_1p;
+    unsigned char total_kills_2p;
+    unsigned char p1_type_count;
+    unsigned char p2_type_count;
+
+
+    draw_pts_screen_template();
+    draw_tank_column_xtimes(0x1E);
+
+    total_kills_1p = 0;
+    total_kills_2p = 0;
+
+    for (i = 0; i < 4; ++i) {
+        total_kills_1p += killcount_1p[i];
+        total_kills_2p += killcount_2p[i];
+    }
+    y = 0;
+    while (1) {
+        ppu_wait_nmi();
+        draw_tank_column();
+
+        init_8_char_string(temp_1p_pts_string);
+        init_8_char_string(temp_2p_pts_string);
+
+        p1_type_count = 0;
+        p2_type_count = 0;
+
+        /*
+            Rows used by original:
+            type 0 -> $0C
+            type 1 -> $0F
+            type 2 -> $12
+            type 3 -> $15
+        */
+        j = (unsigned char)((y * 3) + 0x0C);
+
+        do {
+            ppu_wait_nmi();
+            draw_tank_column();
+            temp = 0;
+            num_to_num_string(tank_kill_pts[y]);
+
+            if (killcount_1p[y] != 0) {
+                --killcount_1p[y];
+                ++p1_type_count;
+
+                add_number_to_temp_string(temp_1p_pts_string);
+                temp = 1;
+
+                /* TODO: original sets Snd_PtsCount1/Snd_PtsCount2 here. */
+                add_life();
+            }
+            if (killcount_2p[y] != 0) {
+                --killcount_2p[y];
+                ++p2_type_count;
+                add_number_to_temp_string(temp_2p_pts_string);
+                temp = 1;
+
+                /* TODO: original sets Snd_PtsCount1/Snd_PtsCount2 here. */
+                add_life();
+            }
+            draw_score_digits(hiscore_1p_string, 4, 9);
+            draw_score_digits(temp_1p_pts_string, 0, j);
+            set_number_string(p1_type_count);
+            draw_score_digits(number_string, 7, j);
+            if (cursor_pos != 0) {
+                draw_score_digits(hiscore_2p_string, 0x16, 9);
+                draw_score_digits(temp_2p_pts_string, 0x12, j);
+                set_number_string(p2_type_count);
+                draw_score_digits(number_string, 0x0D, j);
+            }
+
+            draw_tank_column_xtimes(8);
+
+        } while (temp != 0);
+
+        ++y;
+
+        if (y == 4) {
+            break;
+        }
+        draw_tank_column_xtimes(0x14);
+    }
+
+    draw_tank_column_xtimes(0x1E);
+
+    set_number_string(total_kills_1p);
+    draw_score_digits(number_string, 7, 0x17);
+
+    if (cursor_pos != 0) {
+        set_number_string(total_kills_2p);
+        draw_score_digits(number_string, 0x0D, 0x17);
+    }
+
+    draw_tank_column_xtimes(0x0F);
+
+    if (cursor_pos != 0 && hq_status != 0) {
+        if (total_kills_2p < total_kills_1p && player_lives[0] != 0) {
+            /* Num_To_NumString(0) means 1000 points in original. */
+            num_to_num_string(0);
+
+            add_score(0);
+
+            /* Redraw updated P1 score. */
+            draw_score_digits(hiscore_1p_string, 4, 9);
+            draw_score_digits(number_string, 0, 0x1A);
+            add_vram_cpy_cmd(
+                NAMETABLE_B + COORD_TO_NT_OFFSET(3, 0x19),
+                bonus_label,
+                sizeof(bonus_label));
+            add_vram_cpy_cmd(
+                NAMETABLE_B + COORD_TO_NT_OFFSET(8, 0x1A),
+                pts_label,
+                sizeof(pts_label) - 1);
+
+            /* TODO: original sets Snd_BonusPts here. */
+            add_life();
+        }
+        else if (total_kills_1p < total_kills_2p && player_lives[1] != 0) {
+            /* Num_To_NumString(0) means 1000 points in original. */
+            num_to_num_string(0);
+            add_score(1);
+            /* Redraw updated P2 score. */
+            draw_score_digits(hiscore_2p_string, 0x16, 9);
+            draw_score_digits(number_string, 0x13, 0x1A);
+
+            /* Original: BONUS text at ($16,$19), PTS at ($1B,$1A). */
+            add_vram_cpy_cmd(
+                NAMETABLE_B + COORD_TO_NT_OFFSET(0x16, 0x19),
+                bonus_label,
+                sizeof(bonus_label));
+
+            add_vram_cpy_cmd(
+                NAMETABLE_B + COORD_TO_NT_OFFSET(0x1B, 0x1A),
+                pts_label,
+                sizeof(pts_label) - 1);
+
+            /* TODO: original sets Snd_BonusPts here. */
+            add_life();
+        }
+    }
+    draw_tank_column_xtimes(0x1E);
+    set_bg_pal_number(0);
+}
+static void init_gameover_str_center(void)
+{
+    gameover_str_x = 0x70;
+    gameover_str_y = 0xF0;
+    gameover_scroll_dir = 0;      /* up */
+    gameover_str_timer = 0x11;
+    FRAME_CNT = 0;
+}
+
+static unsigned char level_end_check(void)
+{
+    /* HQ destroyed: game over. */
+    if (hq_status == 0) {
+        init_gameover_str_center();
+        return 1;
+    }
+
+    /* All enemies destroyed: stage clear. */
+    if (enemy_counter == 0)
+        return 1;
+
+    /* At least one player still has lives: continue. */
+    if ((unsigned char)(player_lives[0] + player_lives[1]) != 0)
+        return 0;
+
+    /* Both players dead: game over. */
+    init_gameover_str_center();
+    return 1;
+}
+
 //Main operations processed during gameplay frame (not in pause)
 static void handle_gameplay(){
 
@@ -2122,7 +2664,7 @@ static void handle_gameplay(){
     handle_hq_explode();
     handle_invincibility();
     make_player_shot();
-    //make_enemy_shot();
+    make_enemy_shot();
     handle_enemy_respawn();
     handle_bullet_bg_collisions();
     handle_bullet_bullet_collisions();
@@ -2156,6 +2698,69 @@ GameState stage_start_loop(void) {
 	return STATE_GAMEPLAY;	
 }
 
+static void stop_move_engine_sounds(void)
+{
+    //TODO: implement with sound engine
+    /* snd_move = 0; snd_engine = 0; */
+}
+
+static void sound_stop(void)
+{
+    /* TODO: implement with sound engine */
+}
+
+static void freeze_player_on_hq_destroy(void)
+{
+    /* Original freezes player input when HQ is not intact. */
+    if (hq_status != 0x80) {
+        PAD_STATE[0]  = 0;
+        PAD_STATE[1]  = 0;
+        PAD_STATET[0] = 0;
+        PAD_STATET[1] = 0;
+    }
+}
+static void after_death_battle_run(void)
+{
+    unsigned char id;//have to emit separate var, as many underlying functions are triggered inside
+
+    SECONDS_CNT = 0;
+    FRAME_CNT = 0;
+
+    /* Original:
+       - normal level exit waits 2 seconds
+       - active GAME OVER string waits longer by starting at 0xFE
+    */
+    if (gameover_str_timer != 0)
+        SECONDS_CNT = 0xFE;
+
+    do {
+        ppu_wait_nmi();
+
+        pad_poll(0);
+        pad_poll(1);
+
+        freeze_player_on_hq_destroy();
+
+        /* Gameplay continues during this run, but pause is ignored. */
+        handle_gameplay();
+
+        /* Original AfterDeath render order:
+           bonus, tanks, bullets, water palette swap. */
+        render_bonus();
+
+        for (id = 0; id < 8; ++id)
+            render_tank(id);
+
+        render_bullets();
+
+        /* handle_gameplay() already calls this once;
+           original AfterDeath calls it again. */
+        swap_water_pal_colors();
+
+    } while (SECONDS_CNT != 2);
+}
+
+
 
 GameState gameplay_loop(void) {
     unsigned char id;
@@ -2163,14 +2768,56 @@ GameState gameplay_loop(void) {
         ppu_wait_nmi();
         pad_poll(0);
         pad_poll(1);
-        handle_gameplay();
+
+        if (!pause_flag) {
+            handle_gameplay();
+        }
         render_bonus();
+        render_bullets();
         for(id = 0; id < 8; ++id){
             render_tank(id);    // draw spawn ring / tank
         }
-        render_bullets();
+        if (PAD_STATET[0] & PAD_START) {
+            pause_flag ^= 1;
+            // TODO: pause/unpause sound engine here
+        }
+        render_pause();
+        if (level_end_check())
+            break;
     }
-	return STATE_GAME_OVER;	
+	    /* Stop timers/movement sounds like original. */
+    SECONDS_CNT = 0;
+    FRAME_CNT = 0;
+    stop_move_engine_sounds();
+    /* Run the original after-death battle loop. */
+    if (gameover_str_timer != 0)
+        SECONDS_CNT = 0xFE;
+    after_death_battle_run();
+    sound_stop();
+    draw_pts_screen();
+
+    /* Advance stage like original. */
+    ++stage_number;
+
+    if (stage_number == 71) {
+        stage_number = 1;
+        stage_mode = STAGE_MODE_NORMAL;
+    }
+
+    if (stage_number == 36) {
+        stage_mode = STAGE_MODE_HARD;
+    }
+
+    /* Original game-over condition after score screen. */
+    if ((unsigned char)(player_lives[0] + player_lives[1]) == 0 ||
+        hq_status != 0x80) {
+        return STATE_GAME_OVER;
+    }
+
+    /* Next stage.
+       skip_stage_select_flag is already set, so stage_select_loop
+       should immediately start the next level. */
+    return STATE_STAGE_SELECT;
 }
 GameState game_over_loop(void) {
 	

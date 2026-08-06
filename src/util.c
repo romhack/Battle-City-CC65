@@ -1,4 +1,3 @@
-#include "../lib/neslib.h"
 #include "globals.h"
 #include "../game.h"
 #include "util.h"
@@ -33,16 +32,24 @@ void init_8_char_string(unsigned char *str) {
 }
 // Find index of first non-zero character in number string
 // Returns: index to start drawing from
-// If all zeros, keeps last TWO zeros
-unsigned char skip_leading_zeros(const unsigned char *num_str) {
-    i = 0;    
-    // Find first non-zero
-    while (num_str[i] != 0xFF && num_str[i] == 0) {
+// If all zeros, keeps one or keeps last TWO zeros depending on single_zero parameter
+unsigned char skip_leading_zeros(const unsigned char *num_str, unsigned char single_zero) {
+    //i - char index
+    i = 1;
+    while (num_str[i] == 0) {
         ++i;
-    }    
-    // If all zeros, back up two to show "00"
-    if (num_str[i] == 0xFF && i > 1) {
-        i -= 2;
-    }    
+    }
+    if (num_str[i] == 0xFF) {
+        /* All zeros: keep at least one zero. */
+        --i;
+
+        /* Default behavior keeps two zeros. */
+        if (single_zero == 0) {
+            --i;
+        }
+    } else if (single_zero == 0) {
+        /* Default behavior keeps one leading zero for non-zero numbers. */
+        --i;
+    }
     return i;
 }
