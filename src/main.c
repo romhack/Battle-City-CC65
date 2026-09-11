@@ -90,6 +90,7 @@ void reset_screen(void){
 }
 
 void draw_brick_str(const unsigned char *str, unsigned char x, unsigned char y) {
+    //i - string index
     i = 0;
 
     while (1) {
@@ -780,19 +781,25 @@ static void render_pause(void) {
 }
 
 
+static void null_status(void) {
+    i = 8;
+    do {
+        --i;
+        tank_status[i] = 0;
+    } while (i);
+    player_ice_status[0] = 0;
+    player_ice_status[1] = 0;
+}
+
 GameState title_menu_loop(void) {
 
 	//From top screen border to first menu item vertically $88 pixels
 	#define CURSOR_POS_TO_SPR_COORD ((cursor_pos << 4) + 0x8B)
     static unsigned char pad_count;
 	
-    i = 8;
-    do {
-        --i;
-        tank_status[i] = 0;
-    } while (i);
-	player_ice_status[0] = 0;
-	player_ice_status[1] = 0;	
+    set_bg_pal_number(3);
+    scroll(0, 240);       
+    null_status();
 	tank_x[0] = 0x48;//x on title wont change
 	tank_y[0] = CURSOR_POS_TO_SPR_COORD;
 	tank_status[0] = TANK_CMD_DRIFT | TANK_DIR_RIGHT;
@@ -975,14 +982,18 @@ static unsigned char handle_stage_input(void) {
 }
 
 GameState stage_select_loop(void) {
-    init_stage_select_vars();
+    // If skip_stage_select_flag is 1, we are continuing to the next level, preserving all variables
+    if (skip_stage_select_flag == 0) {
+        init_stage_select_vars();
+    }
 
     oam_clear();
     ppu_wait_nmi();
     vram_adr(NAMETABLE_A);
     scroll(0, 0);
-    set_bg_pal_number(4);    
-
+    pause_flag = 0;
+    set_bg_pal_number(4); 
+       
     draw_converging_shutters();
 
     while (1) {
@@ -990,7 +1001,7 @@ GameState stage_select_loop(void) {
         draw_stage_display();
         
         if (skip_stage_select_flag) {
-            return STATE_GAMEPLAY;
+            return STATE_STAGE_START;
         }
         
         if (handle_stage_input()) {
@@ -1233,7 +1244,7 @@ static void handle_all_tanks_commands(){
 }
 
 //Set occupied flag to nametable tile under each tank for collision detection
-//Note: this function looks strange, because it is optimized in C for shorter assembly output
+//Note: this function looks strange, because it is optimized in C for shorter assembly output and speed
 static void mark_tiles_under_tanks(void) {
     //cnt - tank id
     //temp16 - screen buffer base
@@ -1297,28 +1308,33 @@ static void mark_tiles_under_tanks(void) {
 //Clear occupied flag of nametable tile under each tank
 static void clear_tiles_under_tanks(void) {
     //cnt - tank id
-    //temp16 - screen buffer base
-    //temp - temporary
+    //temp - temporary hi byte
+    
+    static union { //structure for optimized addressing
+        unsigned char *p;
+        unsigned char b[2];
+    } u;
+
     for (cnt = 7; cnt != 0xFF; --cnt) {
-        if (tank_status[cnt] < 0x80 || tank_status[cnt] >= 0xE0)
-            continue;
+        if (tank_status[cnt] < 0x80 || tank_status[cnt] >= 0xE0) continue;
         
-        temp = (nt_addr_hi[cnt] & 3) | 4;
-        temp16 = (temp << 8) | nt_addr_lo[cnt];
+        temp = nt_addr_hi[cnt];
+        
+        // Reconstruct pointer from saved addresses
+        u.b[0] = nt_addr_lo[cnt];
+        u.b[1] = (temp & 0x03) | 0x04;
 
-        temp = ((MetaTileEntry*)temp16)->right_bottom;
-        temp &= 0x7F;        
-        ((MetaTileEntry*)temp16)->right_bottom = temp;
+        // Clear primary tile
+        u.p[0x21] &= 0x7F;
 
-        if (nt_addr_hi[cnt] & 0x80){
-            temp = ((MetaTileEntry*)temp16)->left_bottom;
-            temp &= 0x7F;        
-            ((MetaTileEntry*)temp16)->left_bottom = temp;
+        // Clear left neighbour
+        if (temp & 0x80) {
+            u.p[0x20] &= 0x7F;
         }
-        if (nt_addr_hi[cnt] & 0x40){
-            temp = ((MetaTileEntry*)temp16)->right_top;
-            temp &= 0x7F;        
-            ((MetaTileEntry*)temp16)->right_top = temp; 
+        
+        // Clear top neighbour
+        if (temp & 0x40) {
+            u.p[0x01] &= 0x7F;
         }
     }
 }
@@ -1492,6 +1508,17 @@ static void handle_all_bullets_statuses(void) {
                 break;                                                
         }        
     }
+}
+
+static void draw_naked_hq(void) {
+    static const unsigned char naked_hq_line1[] = { 0xC8, 0xCA };
+    static const unsigned char naked_hq_line2[] = { 0xC9, 0xCB };
+
+    buffer_and_vram_cpy(0x0E, 0x1A, naked_hq_line1, sizeof(naked_hq_line1));
+    buffer_and_vram_cpy(0x0E, 0x1B, naked_hq_line2, sizeof(naked_hq_line2));
+
+    temp = SCREEN_BUFFER[0x3F3] & 0x3F; // reset HQ tile to palette 0
+    buffer_and_vram_fill(0x3F3, temp, 1);
 }
 
 //Draw HQ in different statuses. Simultaneously writes to screen buffer (to handle collisions) and to VRAM (for visual representation)
@@ -1800,7 +1827,7 @@ void add_life() {
 
 #define ABS_DIFF(a, b) ( \
     temp = (a) - (b), \
-    (temp & 0x80) ? (unsigned char)(0 - temp) : temp \
+    (unsigned char)((temp & 0x80) ? (0 - temp) : temp) \
 )
 
 static void render_bonus(void) {
@@ -1961,21 +1988,26 @@ static void handle_bullet_tank_collisions(void) {
     // temp - temporary for calculating abs_diff
     // k - temporary storage for i
     static const unsigned char EnemyKillScore[] = { 0x10, 0x20, 0x30, 0x40 };
+    //Function is heavily used in gameplay loop, it needs optimization variables:
+    static unsigned char current_status;
+    static unsigned char current_x, current_y;
 
     // ---------- Phase 1: Enemy bullets vs Players ----------
     // t = 1 (player 2), then 0 (player 1)
     for (i = 1; i != 0xFF; --i) {
-        if (tank_status[i] < 0x80 || tank_status[i] >= 0xE0)
+        current_status = tank_status[i];
+        if (current_status < 0x80 || current_status >= 0xE0)
             continue;                     // tank not active
-
+        current_x = tank_x[i];
+        current_y = tank_y[i];
         // Enemy bullets are IDs 2..7
         for (j = 7; j >= 2; --j) {
             if ((bullet_status[j] & 0xF0) != 0x40)
                 continue;                 // not flying
 
             // Collision if both axes differ by less than 10 pixels
-            if (ABS_DIFF(bullet_x[j], tank_x[i]) >= 10) continue;
-            if (ABS_DIFF(bullet_y[j], tank_y[i]) >= 10) continue;
+            if (ABS_DIFF(bullet_x[j], current_x) >= 10) continue;
+            if (ABS_DIFF(bullet_y[j], current_y) >= 10) continue;
 
             // Hit → start ricochet animation
             bullet_status[j] = 0x33;
@@ -1999,16 +2031,18 @@ static void handle_bullet_tank_collisions(void) {
     // ---------- Phase 2: Player bullets vs Enemies ----------
     // Enemies are IDs 7 down to 2
     for (i = 7; i >= 2; --i) {
-        if (tank_status[i] < 0x80 || tank_status[i] >= 0xE0)
+        current_status = tank_status[i];
+        if (current_status < 0x80 || current_status >= 0xE0)
             continue;
-
+        current_x = tank_x[i];
+        current_y = tank_y[i];
         // Player bullets: IDs 0,1,8,9. Original checks (b & 6) == 0.
         for (j = 9; j != 0xFF; --j) {
             if ((j & 6) != 0) continue;
             if ((bullet_status[j] & 0xF0) != 0x40) continue;
 
-            if (ABS_DIFF(bullet_x[j], tank_x[i]) >= 10) continue;
-            if (ABS_DIFF(bullet_y[j], tank_y[i]) >= 10) continue;
+            if (ABS_DIFF(bullet_x[j], current_x) >= 10) continue;
+            if (ABS_DIFF(bullet_y[j], current_y) >= 10) continue;
 
             // Collision
             bullet_status[j] = 0x33;
@@ -2023,7 +2057,7 @@ static void handle_bullet_tank_collisions(void) {
 
             // Tank has armour? Reduce it, tank survives
             if ((tank_type[i] & 3) != 0) {
-                --tank_type[i];
+                --tank_type[i];//TODO: optimize surprizingly large code
                 // snd_armour_ricochet_tank = 1;
                 continue;
             }
@@ -2050,17 +2084,19 @@ static void handle_bullet_tank_collisions(void) {
 
     // ---------- Phase 3: Friendly fire (players vs players) ----------
     for (i = 1; i != 0xFF; --i) {
-        if (tank_status[i] < 0x80 || tank_status[i] >= 0xE0)
+        current_status = tank_status[i];
+        if (current_status < 0x80 || current_status >= 0xE0)
             continue;
-
+        current_x = tank_x[i];
+        current_y = tank_y[i];
         // Bullets from the other player only: original uses (player_id ^ bullet_id) & 1 != 0
         for (j = 9; j != 0xFF; --j) {
             if ((j & 6) != 0) continue;          // only player bullet IDs
             if (((i ^ j) & 1) == 0) continue;    // skip own bullet
             if ((bullet_status[j] & 0xF0) != 0x40) continue;
 
-            if (ABS_DIFF(bullet_x[j], tank_x[i]) >= 10) continue;
-            if (ABS_DIFF(bullet_y[j], tank_y[i]) >= 10) continue;
+            if (ABS_DIFF(bullet_x[j], current_x) >= 10) continue;
+            if (ABS_DIFF(bullet_y[j], current_y) >= 10) continue;
 
             // Collision → ricochet
             bullet_status[j] = 0x33;
@@ -2195,19 +2231,19 @@ static void draw_pts_screen_template(void)
     SCREEN_BUFFER[0x3F6] = 0x05;
     SCREEN_BUFFER[0x3F7] = 0x05;
 
-    vram_adr(NAMETABLE_B);
+    vram_adr(NAMETABLE_C);
     vram_write(SCREEN_BUFFER, 1024);
 
     /* Set_PPU */
     set_ppu();
-    scroll(0, 0);
+    scroll(0, 240);
 
     /*
         Draw:
         HIkSCORE
         high score digits
     */
-    add_vram_cpy_cmd(NAMETABLE_B + COORD_TO_NT_OFFSET(8, 3), hi_score_label, sizeof(hi_score_label) - 1);
+    add_vram_cpy_cmd(NAMETABLE_C+ COORD_TO_NT_OFFSET(8, 3), hi_score_label, sizeof(hi_score_label) - 1);
 
     k = skip_leading_zeros(hiscore_string, 1);
     cnt = 0;
@@ -2215,14 +2251,14 @@ static void draw_pts_screen_template(void)
         ++cnt;
     }
 
-    add_vram_cpy_based_cmd(NAMETABLE_B + COORD_TO_NT_OFFSET(0x11 + k, 3), &hiscore_string[k], cnt, 0x30);
+    add_vram_cpy_based_cmd(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x11 + k, 3), &hiscore_string[k], cnt, 0x30);
 
     /*
         Draw:
         STAGE
         stage number
     */
-    add_vram_cpy_cmd(NAMETABLE_B + COORD_TO_NT_OFFSET(0x0C, 5), stage_label, sizeof(stage_label) - 1);
+    add_vram_cpy_cmd(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x0C, 5), stage_label, sizeof(stage_label) - 1);
 
     set_number_string(stage_number);
 
@@ -2233,7 +2269,7 @@ static void draw_pts_screen_template(void)
         ++cnt;
     }
 
-    add_vram_cpy_based_cmd(NAMETABLE_B + COORD_TO_NT_OFFSET(0x0D + k, 5), &number_string[k], cnt, 0x30);
+    add_vram_cpy_based_cmd(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x0D + k, 5), &number_string[k], cnt, 0x30);
 
     ppu_wait_nmi();
     ppu_mask(MASK_SHOW_ALL);
@@ -2243,7 +2279,7 @@ static void draw_pts_screen_template(void)
         I-PLAYER
         player 1 score
     */
-    add_vram_cpy_cmd(NAMETABLE_B + COORD_TO_NT_OFFSET(3, 7), p1_label, sizeof(p1_label) - 1);
+    add_vram_cpy_cmd(NAMETABLE_C+ COORD_TO_NT_OFFSET(3, 7), p1_label, sizeof(p1_label) - 1);
 
     k = skip_leading_zeros(hiscore_1p_string, 1);
     cnt = 0;
@@ -2252,7 +2288,7 @@ static void draw_pts_screen_template(void)
     }
 
     add_vram_cpy_based_cmd(
-        NAMETABLE_B + COORD_TO_NT_OFFSET(4 + k, 9),
+        NAMETABLE_C+ COORD_TO_NT_OFFSET(4 + k, 9),
         &hiscore_1p_string[k],
         cnt,
         0x30
@@ -2260,22 +2296,22 @@ static void draw_pts_screen_template(void)
 
     /* Arrow_Left x4 */
     add_vram_fill_cmd(
-        (unsigned char *)(NAMETABLE_B + COORD_TO_NT_OFFSET(0x0E, 0x0C)),
+        (unsigned char *)(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x0E, 0x0C)),
         0x5B,
         1
     );
     add_vram_fill_cmd(
-        (unsigned char *)(NAMETABLE_B + COORD_TO_NT_OFFSET(0x0E, 0x0F)),
+        (unsigned char *)(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x0E, 0x0F)),
         0x5B,
         1
     );
     add_vram_fill_cmd(
-        (unsigned char *)(NAMETABLE_B + COORD_TO_NT_OFFSET(0x0E, 0x12)),
+        (unsigned char *)(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x0E, 0x12)),
         0x5B,
         1
     );
     add_vram_fill_cmd(
-        (unsigned char *)(NAMETABLE_B + COORD_TO_NT_OFFSET(0x0E, 0x15)),
+        (unsigned char *)(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x0E, 0x15)),
         0x5B,
         1
     );
@@ -2289,7 +2325,7 @@ static void draw_pts_screen_template(void)
             player 2 score
         */
         add_vram_cpy_cmd(
-            NAMETABLE_B + COORD_TO_NT_OFFSET(0x15, 7),
+            NAMETABLE_C+ COORD_TO_NT_OFFSET(0x15, 7),
             p2_label,
             sizeof(p2_label) - 1
         );
@@ -2301,7 +2337,7 @@ static void draw_pts_screen_template(void)
         }
 
         add_vram_cpy_based_cmd(
-            NAMETABLE_B + COORD_TO_NT_OFFSET(0x16 + k, 9),
+            NAMETABLE_C+ COORD_TO_NT_OFFSET(0x16 + k, 9),
             &hiscore_2p_string[k],
             cnt,
             0x30
@@ -2309,22 +2345,22 @@ static void draw_pts_screen_template(void)
 
         /* Arrow_Right x4 */
         add_vram_fill_cmd(
-            (unsigned char *)(NAMETABLE_B + COORD_TO_NT_OFFSET(0x11, 0x0C)),
+            (unsigned char *)(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x11, 0x0C)),
             0x5D,
             1
         );
         add_vram_fill_cmd(
-            (unsigned char *)(NAMETABLE_B + COORD_TO_NT_OFFSET(0x11, 0x0F)),
+            (unsigned char *)(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x11, 0x0F)),
             0x5D,
             1
         );
         add_vram_fill_cmd(
-            (unsigned char *)(NAMETABLE_B + COORD_TO_NT_OFFSET(0x11, 0x12)),
+            (unsigned char *)(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x11, 0x12)),
             0x5D,
             1
         );
         add_vram_fill_cmd(
-            (unsigned char *)(NAMETABLE_B + COORD_TO_NT_OFFSET(0x11, 0x15)),
+            (unsigned char *)(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x11, 0x15)),
             0x5D,
             1
         );
@@ -2334,22 +2370,22 @@ static void draw_pts_screen_template(void)
 
     /* PTS left column */
     add_vram_cpy_cmd(
-        NAMETABLE_B + COORD_TO_NT_OFFSET(8, 0x0C),
+        NAMETABLE_C+ COORD_TO_NT_OFFSET(8, 0x0C),
         pts_label,
         sizeof(pts_label) - 1
     );
     add_vram_cpy_cmd(
-        NAMETABLE_B + COORD_TO_NT_OFFSET(8, 0x0F),
+        NAMETABLE_C+ COORD_TO_NT_OFFSET(8, 0x0F),
         pts_label,
         sizeof(pts_label) - 1
     );
     add_vram_cpy_cmd(
-        NAMETABLE_B + COORD_TO_NT_OFFSET(8, 0x12),
+        NAMETABLE_C+ COORD_TO_NT_OFFSET(8, 0x12),
         pts_label,
         sizeof(pts_label) - 1
     );
     add_vram_cpy_cmd(
-        NAMETABLE_B + COORD_TO_NT_OFFSET(8, 0x15),
+        NAMETABLE_C+ COORD_TO_NT_OFFSET(8, 0x15),
         pts_label,
         sizeof(pts_label) - 1
     );
@@ -2359,22 +2395,22 @@ static void draw_pts_screen_template(void)
         ppu_wait_nmi();
 
         add_vram_cpy_cmd(
-            NAMETABLE_B + COORD_TO_NT_OFFSET(0x1A, 0x0C),
+            NAMETABLE_C+ COORD_TO_NT_OFFSET(0x1A, 0x0C),
             pts_label,
             sizeof(pts_label) - 1
         );
         add_vram_cpy_cmd(
-            NAMETABLE_B + COORD_TO_NT_OFFSET(0x1A, 0x0F),
+            NAMETABLE_C+ COORD_TO_NT_OFFSET(0x1A, 0x0F),
             pts_label,
             sizeof(pts_label) - 1
         );
         add_vram_cpy_cmd(
-            NAMETABLE_B + COORD_TO_NT_OFFSET(0x1A, 0x12),
+            NAMETABLE_C+ COORD_TO_NT_OFFSET(0x1A, 0x12),
             pts_label,
             sizeof(pts_label) - 1
         );
         add_vram_cpy_cmd(
-            NAMETABLE_B + COORD_TO_NT_OFFSET(0x1A, 0x15),
+            NAMETABLE_C+ COORD_TO_NT_OFFSET(0x1A, 0x15),
             pts_label,
             sizeof(pts_label) - 1
         );
@@ -2384,14 +2420,14 @@ static void draw_pts_screen_template(void)
 
     /* Line above TOTAL */
     add_vram_cpy_cmd(
-        NAMETABLE_B + COORD_TO_NT_OFFSET(0x0C, 0x16),
+        NAMETABLE_C+ COORD_TO_NT_OFFSET(0x0C, 0x16),
         line_label,
         sizeof(line_label)
     );
 
     /* TOTAL */
     add_vram_cpy_cmd(
-        NAMETABLE_B + COORD_TO_NT_OFFSET(6, 0x17),
+        NAMETABLE_C+ COORD_TO_NT_OFFSET(6, 0x17),
         total_label,
         sizeof(total_label) - 1
     );
@@ -2429,7 +2465,7 @@ static void draw_score_digits(
 
     if (cnt != 0) {
         add_vram_cpy_based_cmd(
-            NAMETABLE_B + COORD_TO_NT_OFFSET(base_x + k, y),
+            NAMETABLE_C + COORD_TO_NT_OFFSET(base_x + k, y),
             &str[k],
             cnt,
             0x30
@@ -2585,11 +2621,11 @@ static void draw_pts_screen(void)
             draw_score_digits(hiscore_1p_string, 4, 9);
             draw_score_digits(number_string, 0, 0x1A);
             add_vram_cpy_cmd(
-                NAMETABLE_B + COORD_TO_NT_OFFSET(3, 0x19),
+                NAMETABLE_C + COORD_TO_NT_OFFSET(3, 0x19),
                 bonus_label,
                 sizeof(bonus_label));
             add_vram_cpy_cmd(
-                NAMETABLE_B + COORD_TO_NT_OFFSET(8, 0x1A),
+                NAMETABLE_C + COORD_TO_NT_OFFSET(8, 0x1A),
                 pts_label,
                 sizeof(pts_label) - 1);
 
@@ -2606,12 +2642,12 @@ static void draw_pts_screen(void)
 
             /* Original: BONUS text at ($16,$19), PTS at ($1B,$1A). */
             add_vram_cpy_cmd(
-                NAMETABLE_B + COORD_TO_NT_OFFSET(0x16, 0x19),
+                NAMETABLE_C + COORD_TO_NT_OFFSET(0x16, 0x19),
                 bonus_label,
                 sizeof(bonus_label));
 
             add_vram_cpy_cmd(
-                NAMETABLE_B + COORD_TO_NT_OFFSET(0x1B, 0x1A),
+                NAMETABLE_C + COORD_TO_NT_OFFSET(0x1B, 0x1A),
                 pts_label,
                 sizeof(pts_label) - 1);
 
@@ -2677,18 +2713,25 @@ static void handle_gameplay(){
 }
 
 
-GameState stage_start_loop(void) {
-
-	
-	memfill(SCREEN_BUFFER, TILE_GREY, 1024);
-	memfill(SCREEN_BUFFER + 0x3C0, 0, 64);//all tiles will be on pal 0
-	
+static void make_gray_frame(void) {
+    memfill(SCREEN_BUFFER, TILE_GREY, 1024);
+    memfill(SCREEN_BUFFER + 0x3C0, 0, 64); // all tiles on pal 0
     for (i = 0; i < PLAYFIELD_SIZE; ++i) {
         dst = SCREEN_BUFFER + COORD_TO_NT_OFFSET(FRAME_OFFSET, FRAME_OFFSET + i);
-        memfill(dst, TILE_BLACK, PLAYFIELD_SIZE);//TODO: check, this is not necessary - will be overridden with level data, but maybe not in case of construction
+        memfill(dst, TILE_BLACK, PLAYFIELD_SIZE);
     }
-    load_stage();
-    draw_normal_hq();
+}
+
+GameState stage_start_loop(void) {
+
+    if (construction_flag == 0) {
+        make_gray_frame();
+        load_stage();
+        draw_normal_hq();
+    } else {
+        draw_naked_hq();
+    }
+
     reset_vram_cmd_queue();//hq was written to commands buffer, dont dump it to vram: it should not be shown on top of grey screen
     draw_diverging_shutters();
 
@@ -2819,13 +2862,319 @@ GameState gameplay_loop(void) {
        should immediately start the next level. */
     return STATE_STAGE_SELECT;
 }
-GameState game_over_loop(void) {
-	
-	return STATE_TITLE_INTRO;	
+
+//Game over state
+static unsigned char score_is_greater(const unsigned char *score, const unsigned char *hi)
+{
+    //j - string index
+    for (j = 0; j < 7; ++j) {
+        if (score[j] != hi[j]) {
+            return score[j] > hi[j];
+        }
+    }
+
+    return 0;
 }
+
+static unsigned char update_hiscore(void)
+{
+    //i - string index
+    //temp - boolean result isRecord
+    temp = 0;
+
+    if (score_is_greater(hiscore_1p_string, hiscore_string)) {
+        for (i = 0; i < 7; ++i) {
+            hiscore_string[i] = hiscore_1p_string[i];
+        }
+        temp = 1;
+    }
+
+    if (score_is_greater(hiscore_2p_string, hiscore_string)) {
+        for (i = 0; i < 7; ++i) {
+            hiscore_string[i] = hiscore_2p_string[i];
+        }
+        temp = 1;
+    }
+
+    return temp;
+}
+
+static void clear_nt(void)
+{
+    ppu_off();
+
+    memfill(SCREEN_BUFFER, 0, 1024);
+
+    vram_adr(NAMETABLE_A);
+    vram_write(SCREEN_BUFFER, 1024);
+
+    set_ppu();
+    ppu_mask(MASK_SHOW_ALL);
+}
+
+static void draw_brick_gameover(void)
+{
+    //temp16 - wait frames
+    static const unsigned char game_str[] = {
+        'G', 'A', 'M', 'E', 0xFF
+    };
+
+    static const unsigned char over_str[] = {
+        'O', 'V', 'E', 'R', 0xFF
+    };
+
+    SECONDS_CNT = 0;
+
+    ppu_off();
+
+    memfill(SCREEN_BUFFER, 0, 1024);
+
+    draw_brick_str(game_str, 0x3C, 0x46);
+    draw_brick_str(over_str, 0x3C, 0x78);
+
+    vram_adr(NAMETABLE_A);
+    vram_write(SCREEN_BUFFER, 1024);
+
+    set_ppu();
+    scroll(0, 0); 
+    ppu_mask(MASK_SHOW_ALL);
+
+    /*
+        TODO: Original waits for Snd_GameOver1 to finish.
+        Sound is not implemented yet, so use a fixed delay.
+        START/SELECT skips it, like original.
+    */
+    temp16 = 0;
+
+    while (temp16 < 180) {
+        ppu_wait_nmi();
+        pad_poll(0);
+
+        if (PAD_STATET[0] & (PAD_SELECT | PAD_START)) {
+            break;
+        }
+
+        ++temp16;
+    }
+
+    /* Original End_Draw_Brick_GameOver clears the name table. */
+    ppu_off();
+
+    memfill(SCREEN_BUFFER, 0, 1024);
+
+    vram_adr(NAMETABLE_A);
+    vram_write(SCREEN_BUFFER, 1024);
+
+    set_ppu();
+    ppu_mask(MASK_SHOW_ALL);
+
+    sound_stop();
+}
+
+static void draw_record_digit(void)
+{
+    //x - X coordinate of digit
+    //i - index of char in string
+
+    i = 0;
+    while (hiscore_string[i] == 0) {
+        ++i;
+    }
+
+    if (hiscore_string[i] == 0xFF) {
+        i = 6;
+    }
+    x = (unsigned char)(0x10 + (i << 5));
+
+    while (hiscore_string[i] != 0xFF) {
+        draw_brick_char(hiscore_string[i] + 0x30, x, 0x64);
+        x += 0x20;
+        ++i;
+    }
+}
+
+static void draw_record_hiscore(void)
+{
+    //temp16 - wait frames count
+    static const unsigned char hiscore_str[] = {
+        'H', 'I', 'S', 'C', 'O', 'R', 'E', 0xFF
+    };
+
+    SECONDS_CNT = 0;
+
+    ppu_off();
+
+    memfill(SCREEN_BUFFER, 0, 1024);
+
+    draw_brick_str(hiscore_str, 0x10, 0x32);
+    draw_record_digit();
+
+    vram_adr(NAMETABLE_A);
+    vram_write(SCREEN_BUFFER, 1024);
+
+    set_ppu();
+    ppu_mask(MASK_SHOW_ALL);
+
+    /*
+        TODO: Original waits for Snd_RecordPts1 to finish.
+        Sound is not implemented yet, so use a fixed delay
+        and blink palette like original.
+    */
+    temp16 = 0;
+
+    while (temp16 < 180) {
+        ppu_wait_nmi();
+        set_bg_pal_number((unsigned char)(5 + (temp16 & 3)));
+        ++temp16;
+    }
+
+    set_bg_pal_number(0);
+}
+
+GameState game_over_loop(void)
+{
+    oam_clear();
+    pause_flag = 0;
+
+    draw_brick_gameover();
+
+    if (update_hiscore()) {
+        draw_record_hiscore();
+        clear_nt();
+    }
+
+    /* Original jumps to Title_Screen_Loop_Start. */
+    set_bg_pal_number(3);
+
+    ppu_off();
+    memfill(SCREEN_BUFFER, 0, 1024);
+
+    draw_title_screen();
+
+    set_ppu();
+    ppu_mask(MASK_SHOW_ALL);
+
+    construction_flag = 0;
+    // Reset flag so the next playthrough starts fresh at the title screen
+    skip_stage_select_flag = 0;
+
+    return STATE_TITLE_INTRO;
+}
+
+static void check_border_reach(void) {
+    if (tank_x[0] > 0xD8) tank_x[0] = 0xD8;
+    if (tank_x[0] < 0x18) tank_x[0] = 0x18;
+    if (tank_y[0] > 0xD8) tank_y[0] = 0xD8;
+    if (tank_y[0] < 0x18) tank_y[0] = 0x18;
+}
+
+static void move_tank_construction(void) {
+    if (PAD_STATE[0] & (PAD_UP | PAD_DOWN | PAD_LEFT | PAD_RIGHT)) {
+        ++joypad_delay;
+        bkg_occurence_flag = 0;   // any direction held resets the "already placed" flag
+    } else {
+        joypad_delay = 0;
+    }
+
+    if (joypad_delay == 0x14) {
+        joypad_delay = 0xF;               // repeat every 5 frames from here on
+        if (PAD_STATE[0] & PAD_RIGHT)      tank_x[0] += 0x10;
+        else if (PAD_STATE[0] & PAD_LEFT)  tank_x[0] -= 0x10;
+        else if (PAD_STATE[0] & PAD_DOWN)  tank_y[0] += 0x10;
+        else if (PAD_STATE[0] & PAD_UP)    tank_y[0] -= 0x10;
+        return;
+    }
+
+    if (!(PAD_STATET[0] & (PAD_UP | PAD_DOWN | PAD_LEFT | PAD_RIGHT))) {
+        return;
+    }
+    if (PAD_STATET[0] & PAD_RIGHT)      tank_x[0] += 0x10;
+    else if (PAD_STATET[0] & PAD_LEFT)  tank_x[0] -= 0x10;
+    else if (PAD_STATET[0] & PAD_DOWN)  tank_y[0] += 0x10;
+    else if (PAD_STATET[0] & PAD_UP)    tank_y[0] -= 0x10;
+}
+
+static void draw_tsa_on_tank(void) {
+    write_tsa_to_vram((tank_x[0] >> 3) & 0xFE, (tank_y[0] >> 3) & 0xFE, tsa_block_number & 0x0F);
+}
+
+
+
 GameState construction_loop(void) {
-	
-	return STATE_TITLE_MENU;	
+    if (construction_flag == 0) {
+        // First time in this session: draw a fresh grey frame.
+        // Re-entering (Skip_LoadFrame in the ROM) preserves whatever
+        // was already built - don't touch the nametable.
+        ppu_off();
+        make_gray_frame();
+        vram_adr(NAMETABLE_A);
+        vram_write(SCREEN_BUFFER, 1024);
+        set_ppu();
+        ppu_mask(MASK_SHOW_ALL);
+    }
+
+    null_status();
+    tank_x[0] = 0x10;
+    tank_y[0] = 0x18;
+    tank_status[0] = TANK_CMD_DRIFT | TANK_DIR_UP; // ROM sets Tank_Status=0x84 here (0x83="right" on the title tank) - use whichever TANK_DIR_* matches low nibble 4
+    tank_type[0] = TANK_TYPE_0;
+    SPR_PRIORITY = 0;          // tank always drawn in front, even over forest, while editing
+    track_pos[0] = 0;
+    bkg_occurence_flag = 0;
+    joypad_delay = 0;
+    tsa_block_number = 0;
+    scroll(0, 0);
+    player_blink_timer[0] = 0;
+    player_blink_timer[1] = 0;
+
+    if (construction_flag == 0) {
+        draw_normal_hq();
+    }
+
+    while (1) {
+        ppu_wait_nmi();
+        pad_poll(0);
+
+        move_tank_construction();
+        check_border_reach();
+
+        if (FRAME_CNT & 0x10) {
+            render_tank(0);
+        }
+
+        // Stationary + a fresh A/B press: first press just places the
+        // current block; a second press (without moving away) cycles
+        // to the next/previous block type instead.
+        if (!(PAD_STATE[0] & (PAD_UP | PAD_DOWN | PAD_LEFT | PAD_RIGHT))) {
+            if (PAD_STATET[0] & PAD_A) {
+                if (bkg_occurence_flag != 0) {
+                    ++tsa_block_number;
+                    if (tsa_block_number == 14) tsa_block_number = 0;
+                }
+                bkg_occurence_flag = 1;
+            } else if (PAD_STATET[0] & PAD_B) {
+                if (bkg_occurence_flag != 0) {
+                    tsa_block_number = (tsa_block_number == 0) ? 13 : tsa_block_number - 1;
+                }
+                bkg_occurence_flag = 1;
+            }
+        }
+
+        // A/B held (whether just pressed, held while stationary, or
+        // held while dragging across tiles) paints the current block.
+        if (PAD_STATE[0] & (PAD_A | PAD_B)) {
+            draw_tsa_on_tank();
+        }
+
+        if (PAD_STATET[0] & PAD_START) {
+            break;
+        }
+    }
+
+    SPR_PRIORITY = 0x20;
+    scroll(0, 240);         // 240 = NAMETABLE_C, where the title screen art lives
+    ++construction_flag;    // matches INC Construction_Flag (used elsewhere for the secret-code check)
+    return STATE_TITLE_MENU;
 }
 
 GameState demoplay_loop(void) {

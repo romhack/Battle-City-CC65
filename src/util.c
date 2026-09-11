@@ -34,22 +34,27 @@ void init_8_char_string(unsigned char *str) {
 // Returns: index to start drawing from
 // If all zeros, keeps one or keeps last TWO zeros depending on single_zero parameter
 unsigned char skip_leading_zeros(const unsigned char *num_str, unsigned char single_zero) {
-    //i - char index
     i = 1;
+    
+    // Find the first non-zero digit or the $FF terminator
     while (num_str[i] == 0) {
         ++i;
     }
+    
     if (num_str[i] == 0xFF) {
-        /* All zeros: keep at least one zero. */
+        /* All zeros: back up to keep at least one zero. */
         --i;
-
-        /* Default behavior keeps two zeros. */
+        
+        /* Default behavior (single_zero == 0) keeps two zeros. */
         if (single_zero == 0) {
             --i;
         }
-    } else if (single_zero == 0) {
-        /* Default behavior keeps one leading zero for non-zero numbers. */
-        --i;
     }
+    
+    /* 
+     * For non-zero numbers, 'i' is already pointing exactly at the first 
+     * non-zero digit. Returning it as-is prevents drawing an extra leading 
+     * zero (e.g., correctly draws "9000" instead of "09000").
+     */
     return i;
 }

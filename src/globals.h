@@ -343,4 +343,12 @@ EXTERN unsigned char nt_addr_lo[8], nt_addr_hi[8];
 #pragma zpsym("nt_addr_lo")
 #pragma zpsym("nt_addr_hi")
 
+//Construction mode variables 
+EXTERN unsigned char tsa_block_number, joypad_delay, bkg_occurence_flag;
+#pragma zpsym("tsa_block_number")   // TSA_BlockNumber: currently selected wall-block type (0-13)
+#pragma zpsym("joypad_delay")       // Joypad_Delay: D-pad auto-repeat timer
+#pragma zpsym("bkg_occurence_flag") // BkgOccurence_Flag: "already placed a block at this tile" flag
+
+
+
 #endif
