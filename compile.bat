@@ -8,16 +8,28 @@ set src=src
 set name=main
 set config=nrom_32k_horz.cfg
 
+REM --- COMPILER FLAGS ---
+REM -t nes       : Target NES (defines __NES__, correct charmap)
+REM -Oirs        : Optimize, Inline runtime, Register vars, Inline std funcs
+REM -Cl          : Static locals (moves locals off slow software stack)
+REM --add-source : Adds C source as comments in the .s file
+REM -g           : Debug info
+set CC_FLAGS=-t nes -Oirs -Cl --add-source -g
+
 REM Create BUILD directory if it doesn't exist
 if not exist build mkdir build
 
-REM Compilation steps
 echo Compiling C source...
-cc65 -Oirs %src%\globals.c --add-source -g
-cc65 -Oirs %src%\util.c --add-source -g
-cc65 -Oirs %src%\%name%.c --add-source -g
-cc65 -Oirs %src%\levels.c --add-source -g
+cc65 %CC_FLAGS% %src%\globals.c
+if errorlevel 1 goto error
 
+cc65 %CC_FLAGS% %src%\util.c
+if errorlevel 1 goto error
+
+cc65 %CC_FLAGS% %src%\%name%.c
+if errorlevel 1 goto error
+
+cc65 %CC_FLAGS% %src%\levels.c
 if errorlevel 1 goto error
 
 echo Assembling startup code...

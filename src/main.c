@@ -23,6 +23,11 @@ static unsigned char hiscore_string[8];
 // 0=up,1=left,2=down,3=right
 static const unsigned char dx[4] = { 0, 0xFF,  0,  1 };
 static const unsigned char dy[4] = { 0xFF,  0,  1,  0 };
+// *8 increment: replacing multiplication by LUT
+static const unsigned char dx8[4] = { 0, 0xF8,  0,  8 };
+static const unsigned char dy8[4] = { 0xF8,  0,  8,  0 };
+
+static const unsigned char PlayerBulletIds[] = {0, 1, 8, 9};
 
 
 
@@ -329,6 +334,7 @@ void command_move(unsigned char id){
     //temp - direction tile index
     //i - probe x, j - probe y
     //x - block x, y - block y
+    //temp16 - pointer in screen buffer
     unsigned char tmp1, tmp2;
 
     // Pre-move RNG check: 1/16 chance for aligned enemies to retarget
@@ -342,8 +348,8 @@ void command_move(unsigned char id){
     }
 
     k = tank_status[id] & 0x03;
-    tmp1   = (unsigned char)(dx[k] * 8);  // x_inc*8, wraps signed→byte
-    tmp2   = (unsigned char)(dy[k] * 8);  // y_inc*8
+    tmp1   = (unsigned char)(dx8[k]);  // x_inc*8, wraps signed→byte
+    tmp2   = (unsigned char)(dy8[k]);  // y_inc*8
     x = tank_x[id] + (unsigned char)dx[k]; // 1-pixel step
     y = tank_y[id] + (unsigned char)dy[k];
 
@@ -352,7 +358,8 @@ void command_move(unsigned char id){
     if (i >= x) i--;  // Compare_Block_X
     j = y + tmp1 + tmp2;
     if (j >= y) j--;  // Compare_Block_Y
-    temp = SCREEN_BUFFER[(j >> 3) * 32 + (i >> 3)];
+    temp16 = ((unsigned int)(j >> 3) << 5) + (i >> 3);  
+    temp = SCREEN_BUFFER[temp16];
 
     if (temp < 0x80 && (temp == 0 || temp >= 0x20)) {
         // Corner 2
@@ -360,7 +367,8 @@ void command_move(unsigned char id){
         if (i >= x) i--;
         j = y + tmp2 - tmp1;
         if (j >= y) j--;
-        temp = SCREEN_BUFFER[(j >> 3) * 32 + (i >> 3)];
+        temp16 = ((unsigned int)(j >> 3) << 5) + (i >> 3);
+        temp = SCREEN_BUFFER[temp16];
 
         if (temp < 0x80 && (temp == 0 || temp >= 0x20)) {
             tank_x[id] = x;
@@ -575,26 +583,57 @@ void command_load_tank(unsigned char id){
 
 void handle_tank_status_command(unsigned char id){
     //all zp variables should be available now for any of commands
-    typedef void (*tank_handler_func)(unsigned char);
-    static const tank_handler_func tank_command_jump_table[16] = {
-        skip_handle,                // 0
-        command_explode,            // 1
-        command_explode,            // 2
-        command_explode,            // 3
-        command_explode,            // 4
-        command_explode,            // 5
-        command_explode,            // 6
-        command_explode,            // 7
-        command_drift,              // 8
-        command_get_random_status,  // 9
-        command_move,               // A
-        command_aim_hq,             // B
-        command_aim_player2,        // C
-        command_aim_player1,        // D
-        command_load_tank,          // E
-        command_set_respawn         // F
+    static const void * const jumptable[] = {
+        &&L_skip,          // 0
+        &&L_explode,       // 1
+        &&L_explode,       // 2
+        &&L_explode,       // 3
+        &&L_explode,       // 4
+        &&L_explode,       // 5
+        &&L_explode,       // 6
+        &&L_explode,       // 7
+        &&L_drift,         // 8
+        &&L_random_status, // 9
+        &&L_move,          // 10
+        &&L_aim_hq,        // 11
+        &&L_aim_p2,        // 12
+        &&L_aim_p1,        // 13
+        &&L_load_tank,     // 14
+        &&L_set_respawn    // 15
     };
-    tank_command_jump_table[GET_TANK_CMD(id)](id);
+
+    cnt = GET_TANK_CMD(id);
+    goto *jumptable[cnt];
+
+L_skip:
+    return;
+L_explode:
+    command_explode(id);
+    return;
+L_drift:
+    command_drift(id);
+    return;
+L_random_status:
+    command_get_random_status(id);
+    return;
+L_move:
+    command_move(id);
+    return;
+L_aim_hq:
+    command_aim_hq(id);
+    return;
+L_aim_p2:
+    command_aim_player2(id);
+    return;
+L_aim_p1:
+    command_aim_player1(id);
+    return;
+L_load_tank:
+    command_load_tank(id);
+    return;
+L_set_respawn:
+    command_set_respawn(id);
+    return;
 }
 
 void render_kill_points(unsigned char id){
@@ -698,31 +737,39 @@ void render_normal_tank(unsigned char tank_id) {
 
 
 void render_tank(unsigned char tank_id) {
-    typedef void (*tank_handler_func)(unsigned char);
     //cnt - cmd index
     //i - tank id
-    //zp variables will be screwed by called functions, but it's allowed - variables be not used twice   
-    static const tank_handler_func tank_render_jump_table[16] = {
-        skip_handle,           		// 0
-        render_kill_points,      	// 1
-        render_small_explode1,      // 2
-        render_big_explode,      	// 3
-        render_big_explode,      	// 4
-        render_small_explode2,      // 5
-        render_small_explode2,      // 6
-        render_small_explode2,      // 7
-        render_normal_tank,         // 8
-        render_normal_tank,         // 9
-        render_normal_tank,      	// A
-        render_normal_tank,      	// B
-        render_normal_tank,      	// C
-        render_normal_tank,      	// D
-        render_respawn,      		// E
-        render_respawn      		// F
+    //zp variables will be screwed by called functions, but it's allowed - variables be not used twice 
+    static const void * const jumptable[] = {
+        &&L_skip,        // 0
+        &&L_kill_pts,    // 1
+        &&L_explode1,    // 2
+        &&L_big_expl,    // 3
+        &&L_big_expl,    // 4
+        &&L_explode2,    // 5
+        &&L_explode2,    // 6
+        &&L_explode2,    // 7
+        &&L_normal,      // 8
+        &&L_normal,      // 9
+        &&L_normal,      // A
+        &&L_normal,      // B
+        &&L_normal,      // C
+        &&L_normal,      // D
+        &&L_respawn,     // E
+        &&L_respawn,     // F
     };
-    i = tank_id;    
+
+    i = tank_id;
     cnt = GET_TANK_CMD(i);
-    tank_render_jump_table[cnt](i);
+    goto *jumptable[cnt];
+
+L_skip:     return;
+L_kill_pts: render_kill_points(i);    return;
+L_explode1: render_small_explode1(i); return;
+L_big_expl: render_big_explode(i);    return;
+L_explode2: render_small_explode2(i); return;
+L_normal:   render_normal_tank(i);    return;
+L_respawn:  render_respawn(i);        return;
 }
 
 
@@ -1406,8 +1453,8 @@ static void make_shot() {
     bullet_status[i] = 0x40 | temp;
 
     // Position bullet 8 pixels in front of the tank
-    bullet_x[i] = tank_x[i] + (dx[temp] * 8);
-    bullet_y[i] = tank_y[i] + (dy[temp] * 8);
+    bullet_x[i] = tank_x[i] + (dx8[temp]);
+    bullet_y[i] = tank_y[i] + (dy8[temp]);
 
     // Reset properties
     bullet_property[i] = 0;
@@ -1641,18 +1688,23 @@ static unsigned char bullet_bg_impact() {
     //temp - tile
     //src - tile pointer 
     //temp16 - offset
+    unsigned char tile_row, tile_col; //local variables for optimization
+    unsigned char lo, hi;
+    static const unsigned char QuadLut[4] = {1, 2, 4, 8};
+    
 
-    cnt = 1;
-    if (y & 4) {
-        cnt <<= 2;          // bit 2 set → bottom quadrant
-    }
-    if (x & 4) {
-        cnt <<= 1;          // bit 2 set → right quadrant
-    }
+    // define quadrant
+    cnt = QuadLut[((y & 4) >> 1) | ((x & 4) >> 2)];
     // mask now holds 1,2,4,8 (top‑left, top‑right, bottom‑left, bottom‑right)
 
     // Get pointer to the tile in the screen buffer
-    temp16 = COORD_TO_NT_OFFSET(x >> 3, y >> 3);
+    tile_row = y >> 3;
+    tile_col = x >> 3;
+    lo = (tile_row & 0x07) * 0x20;   
+    lo |= tile_col;                  
+    hi = tile_row >> 3;              
+    temp16 = ((unsigned int)hi << 8) | lo;  
+
     src = &SCREEN_BUFFER[temp16];
     temp = *src;
 
@@ -1824,11 +1876,10 @@ void add_life() {
 }
 
 
-
-#define ABS_DIFF(a, b) ( \
-    temp = (a) - (b), \
-    (unsigned char)((temp & 0x80) ? (0 - temp) : temp) \
-)
+// Math trick to replace ABS_DIFF - optimization for top hotspot places in frame loop
+#define OUT_OF_RANGE_10(a, b) ((unsigned char)(((a) - (b)) + 9) > 18)
+#define OUT_OF_RANGE_6(a, b) ((unsigned char)(((a) - (b)) + 5) > 10)
+#define OUT_OF_RANGE_12(a, b) ((unsigned char)(((a) - (b)) + 11) > 22)
 
 static void render_bonus(void) {
     if (bonus_x == 0) return; // No bonus on screen
@@ -1929,8 +1980,8 @@ void handle_bonus_collision(void) {
         if (tank_status[i] < 0x80) continue;         // not active
         if (tank_status[i] >= 0xE0) continue;        // exploding/respawning
         
-        if (ABS_DIFF(tank_x[i], bonus_x) >= 0x0C) continue;
-        if (ABS_DIFF(tank_y[i], bonus_y) >= 0x0C) continue;
+        if (OUT_OF_RANGE_12(tank_x[i], bonus_x)) continue;
+        if (OUT_OF_RANGE_12(tank_y[i], bonus_y)) continue;
 
         // Collision confirmed
         bonus_timer = 0x32;  // show score for 50 frames
@@ -1985,18 +2036,17 @@ static void handle_bullet_tank_collisions(void) {
     // i - tank id
     // j - bullet id
     // cnt - tank type index
-    // temp - temporary for calculating abs_diff
     // k - temporary storage for i
+    // temp - current status
     static const unsigned char EnemyKillScore[] = { 0x10, 0x20, 0x30, 0x40 };
     //Function is heavily used in gameplay loop, it needs optimization variables:
-    static unsigned char current_status;
-    static unsigned char current_x, current_y;
+    static unsigned char current_x, current_y, idx;
 
     // ---------- Phase 1: Enemy bullets vs Players ----------
     // t = 1 (player 2), then 0 (player 1)
     for (i = 1; i != 0xFF; --i) {
-        current_status = tank_status[i];
-        if (current_status < 0x80 || current_status >= 0xE0)
+        temp = tank_status[i];
+        if (temp < 0x80 || temp >= 0xE0)
             continue;                     // tank not active
         current_x = tank_x[i];
         current_y = tank_y[i];
@@ -2006,8 +2056,8 @@ static void handle_bullet_tank_collisions(void) {
                 continue;                 // not flying
 
             // Collision if both axes differ by less than 10 pixels
-            if (ABS_DIFF(bullet_x[j], current_x) >= 10) continue;
-            if (ABS_DIFF(bullet_y[j], current_y) >= 10) continue;
+            if (OUT_OF_RANGE_10(bullet_x[j], current_x)) continue;
+            if (OUT_OF_RANGE_10(bullet_y[j], current_y)) continue;
 
             // Hit → start ricochet animation
             bullet_status[j] = 0x33;
@@ -2031,18 +2081,18 @@ static void handle_bullet_tank_collisions(void) {
     // ---------- Phase 2: Player bullets vs Enemies ----------
     // Enemies are IDs 7 down to 2
     for (i = 7; i >= 2; --i) {
-        current_status = tank_status[i];
-        if (current_status < 0x80 || current_status >= 0xE0)
+        temp = tank_status[i];
+        if (temp < 0x80 || temp >= 0xE0)
             continue;
         current_x = tank_x[i];
         current_y = tank_y[i];
         // Player bullets: IDs 0,1,8,9. Original checks (b & 6) == 0.
-        for (j = 9; j != 0xFF; --j) {
-            if ((j & 6) != 0) continue;
+        for (idx = 0; idx < 4; ++idx) {
+            j = PlayerBulletIds[idx];
             if ((bullet_status[j] & 0xF0) != 0x40) continue;
 
-            if (ABS_DIFF(bullet_x[j], current_x) >= 10) continue;
-            if (ABS_DIFF(bullet_y[j], current_y) >= 10) continue;
+            if (OUT_OF_RANGE_10(bullet_x[j], current_x)) continue;
+            if (OUT_OF_RANGE_10(bullet_y[j], current_y)) continue;
 
             // Collision
             bullet_status[j] = 0x33;
@@ -2084,19 +2134,19 @@ static void handle_bullet_tank_collisions(void) {
 
     // ---------- Phase 3: Friendly fire (players vs players) ----------
     for (i = 1; i != 0xFF; --i) {
-        current_status = tank_status[i];
-        if (current_status < 0x80 || current_status >= 0xE0)
+        temp = tank_status[i];
+        if (temp < 0x80 || temp >= 0xE0)
             continue;
         current_x = tank_x[i];
         current_y = tank_y[i];
         // Bullets from the other player only: original uses (player_id ^ bullet_id) & 1 != 0
-        for (j = 9; j != 0xFF; --j) {
-            if ((j & 6) != 0) continue;          // only player bullet IDs
+        for (idx = 0; idx < 4; ++idx) {
+            j = PlayerBulletIds[idx];         // only player bullet IDs
             if (((i ^ j) & 1) == 0) continue;    // skip own bullet
             if ((bullet_status[j] & 0xF0) != 0x40) continue;
 
-            if (ABS_DIFF(bullet_x[j], current_x) >= 10) continue;
-            if (ABS_DIFF(bullet_y[j], current_y) >= 10) continue;
+            if (OUT_OF_RANGE_10(bullet_x[j], current_x)) continue;
+            if (OUT_OF_RANGE_10(bullet_y[j], current_y)) continue;
 
             // Collision → ricochet
             bullet_status[j] = 0x33;
@@ -2119,16 +2169,17 @@ static void handle_bullet_tank_collisions(void) {
 // Process bullet-vs-bullet collisions (called once per frame)
 // Two enemy bullets never check against each other.
 static void handle_bullet_bullet_collisions(void) {
-    for (i = 9; i != 0xFF; --i) {
-        if ((i & 6) != 0) continue;                        // only 0,1,8,9 act as bullet A
+    //temp - bullet index
+    for (temp = 0; temp < 4; ++temp) {
+        i = PlayerBulletIds[temp]; //only player bullets
         if ((bullet_status[i] & 0xF0) != 0x40) continue;   // A not flying
 
         for (j = 9; j != 0xFF; --j) {
             if ((j & 7) == (i & 7)) continue;               // self (aliased 0/8, 1/9)
             if ((bullet_status[j] & 0xF0) != 0x40) continue; // B not flying
 
-            if (ABS_DIFF(bullet_x[j], bullet_x[i]) >= 6) continue;
-            if (ABS_DIFF(bullet_y[j], bullet_y[i]) >= 6) continue;
+            if (OUT_OF_RANGE_6(bullet_x[j], bullet_x[i])) continue;
+            if (OUT_OF_RANGE_6(bullet_y[j], bullet_y[i])) continue;
 
             // Bullets collided - destroy both
             bullet_status[i] = 0;

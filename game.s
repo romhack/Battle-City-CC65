@@ -474,42 +474,83 @@ _add_sprite:
 @1:
 	rts  
 
+;Writes to OAM buffer and advances to next slot (second half of a 16x16
+;sprite). Reuses the Y-derived pointer bits (TEMP, PTR+1) left behind by
+;the write_oam_entry call for the first half — valid because SPR_Y is
+;identical between the two halves.
+write_oam_entry_x_only:
+    ldx SPRID
+    lda CHR_BYTE
+    sta OAM_BUF+1,x
+    lda SPR_Y
+    sec
+    sbc #8
+    sta OAM_BUF+0,x
+    lda SPR_X
+    sta OAM_BUF+3,x
+
+    ; cheap X-only pointer recompute; PTR+1 and TEMP already valid
+    lda SPR_X
+    clc
+    adc #3
+    lsr a
+    lsr a
+    lsr a
+    ora TEMP
+    sta <PTR
+
+    ldy #0
+    lda (PTR),Y
+    cmp #$22
+    bne @skip_attrib
+    lda TEMP_VAR
+    ora SPR_PRIORITY
+    sta TEMP_VAR
+@skip_attrib:
+    lda TEMP_VAR
+    sta OAM_BUF+2,x
+
+    txa
+    clc
+    adc SPRSTEP
+    sta SPRID
+    rts    
+
 ;void __fastcall__ add_sprite_16x16(unsigned char x,unsigned char y,unsigned char chrnum,unsigned char pal);
 _add_sprite_16x16:
-; Left half
-    sta TEMP_VAR        ;A has attribute    
-    pha 
-	ldy #0		        ;3 popa calls replacement
-	lda (sp),y          ;chr number
-	iny
-    sta CHR_BYTE
-	lda (sp),y          ;Y
+    sta TEMP_VAR
+    pha
+    ldy #0
+    lda (sp),y
     iny
-    sta SPR_Y   
-	lda (sp),y          ;X
+    sta CHR_BYTE
+    lda (sp),y
+    iny
+    sta SPR_Y
+    lda (sp),y
     pha
     sec
-    sbc #8              ; first half has x - 8
+    sbc #8
     sta SPR_X
-    jsr write_oam_entry
+    jsr write_oam_entry          ; full pointer calc (X+Y) - unchanged
 
 ; Right half
-    pla                 ; restore initial X
-	sta SPR_X
-    pla                 ; restore initial attribute
-    sta TEMP_VAR        
+    pla
+    sta SPR_X
+    pla
+    sta TEMP_VAR
     lda CHR_BYTE
     clc
-    adc #2              ; right part has chr number + 2
-	sta CHR_BYTE
-    jsr write_oam_entry
+    adc #2
+    sta CHR_BYTE
+    jsr write_oam_entry_x_only   ; reuse cached Y bits, only redo X
 
-	lda <sp
-	clc
-	adc #3 ;4
-	sta <sp
-	bcc @1
-	inc <sp+1
+    lda <sp
+    clc
+    adc #3
+    sta <sp
+    bcc @1
+    inc <sp+1
 @1:
-	rts
+    rts
 	
