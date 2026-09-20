@@ -1,6 +1,15 @@
 #include "globals.h"
 #include "../game.h"
 #include "util.h"
+#include "sound.h"
+
+//Due to rewritten sound engine it now has reentrance problem.
+//So we call sound_update on every wait of NMI, but not inside NMI handler
+void frame_wait(void)
+{
+    ppu_wait_nmi();
+    sound_update();
+}
 
 //Copy data from source to SCREEN_BUFFER (for collision handling) 
 // and create vram copy command in queue (for visual represenation)

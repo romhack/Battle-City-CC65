@@ -504,7 +504,7 @@ void write_tsa_to_vram(unsigned char x, unsigned char y, unsigned char tsa_id){
 //each byte of attribute is copied as separate command by one frame
 void copy_stage_attributes_to_vram(void) {
     for (i = 0; i < 0x40; ++i) {
-        ppu_wait_nmi();
+        frame_wait();
         add_vram_cpy_cmd(NAMETABLE_A + 0x3C0 + i, 
                           SCREEN_BUFFER + 0x3C0 + i, 1);
     }
@@ -522,6 +522,7 @@ void load_stage(void) {
     dst = SCREEN_BUFFER + COORD_TO_NT_OFFSET(FRAME_OFFSET, FRAME_OFFSET);
     tile_y = FRAME_OFFSET;
     for (j = 0; j < LEVEL_ROWS; ++j) {
+        frame_wait();
         tile_x = FRAME_OFFSET;
         for (cnt = 0; cnt < LEVEL_COLS; cnt += 2) {
             temp = *src++;

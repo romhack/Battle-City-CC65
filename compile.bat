@@ -36,6 +36,10 @@ echo Assembling startup code...
 ca65 crt0.s -g
 if errorlevel 1 goto error
 
+echo Assembling sound engine...
+ca65 %src%\sound.s -g
+if errorlevel 1 goto error
+
 echo Assembling generated code...
 ca65 %src%\globals.s -g
 ca65 %src%\util.s -g
@@ -44,7 +48,7 @@ ca65 %src%\levels.s -g
 if errorlevel 1 goto error
 
 echo Linking...
-ld65 -C %config% -o %name%.nes crt0.o %src%\globals.o %src%\util.o %src%\levels.o %src%\%name%.o nes.lib -Ln labels.txt --dbgfile %name%.dbg
+ld65 -C %config% -m %name%.map -o %name%.nes crt0.o %src%\sound.o %src%\globals.o %src%\util.o %src%\levels.o %src%\%name%.o nes.lib -Ln labels.txt --dbgfile %name%.dbg
 if errorlevel 1 goto error
 
 REM Cleanup and organize
@@ -53,9 +57,14 @@ echo Cleaning up...
 del %src%\*.o
 del *.o
 move /Y labels.txt build\ >nul
-move /Y %src%\*.s build\ >nul
+move /Y %src%\globals.s build\ >nul
+move /Y %src%\levels.s build\ >nul
+move /Y %src%\main.s build\ >nul
+move /Y %src%\util.s build\ >nul
+
 move /Y %name%.nes build\ >nul
 move /Y %name%.dbg build\ >nul
+move /Y %name%.map build\ >nul
 
 REM Success
 echo.

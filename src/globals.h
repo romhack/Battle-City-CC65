@@ -307,12 +307,6 @@ EXTERN unsigned char player_ice_status[2];//High bit = flag that tank is on ice
                                           //Lower 5 bits = sliding timer on ice (0 = not sliding)
 #pragma zpsym("player_ice_status")
 
-EXTERN unsigned char killcount_1p[4];
-#pragma zpsym("killcount_1p")
-
-EXTERN unsigned char killcount_2p[4];
-#pragma zpsym("killcount_2p")
-
 EXTERN unsigned char bullet_status[10];
 #pragma zpsym("bullet_status")
 
@@ -348,6 +342,10 @@ EXTERN unsigned char tsa_block_number, joypad_delay, bkg_occurence_flag;
 #pragma zpsym("tsa_block_number")   // TSA_BlockNumber: currently selected wall-block type (0-13)
 #pragma zpsym("joypad_delay")       // Joypad_Delay: D-pad auto-repeat timer
 #pragma zpsym("bkg_occurence_flag") // BkgOccurence_Flag: "already placed a block at this tile" flag
+
+EXTERN unsigned char snd_move_active;
+#pragma zpsym("snd_move_active")
+
 
 
 

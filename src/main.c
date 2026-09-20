@@ -4,6 +4,7 @@
 #include "globals.h" 
 #include "../game.h"
 #include "util.h"
+#include "sound.h"
 #include "levels.h"
 
 //todo: move gamover to specified function of gameover handle
@@ -11,6 +12,7 @@ static unsigned char gameover_str_x;
 static unsigned char gameover_str_y;
 static unsigned char gameover_scroll_dir;
 static unsigned char gameover_str_timer;
+
 static unsigned char staff_string_ram[16];
 // number_string layout: indices 0-7, digits 0-9, 0xFF = sentinel/end
 // Score strings (hiscore_1p_string, hiscore_2p_string): same 8-byte BCD format
@@ -18,6 +20,10 @@ static unsigned char staff_string_ram[16];
 static unsigned char hiscore_1p_string[8];
 static unsigned char hiscore_2p_string[8];
 static unsigned char hiscore_string[8];
+
+static unsigned char killcount_1p[4];
+static unsigned char killcount_2p[4];
+
 
 // Bullets and tanks coordinate increments
 // 0=up,1=left,2=down,3=right
@@ -66,7 +72,7 @@ void load_spr_pal(void) {
 
 
 void set_ppu(void) {
-    ppu_wait_nmi(); 
+    frame_wait();
     oam_size(1);          // Set 8x16 sprites (bit 5)
     bank_bg(1);           // Background CHR at $1000 (bit 4)
 }
@@ -167,7 +173,7 @@ GameState title_intro_loop(void) {
     i = 0;
     do {
         scroll(0, i);
-        ppu_wait_nmi();
+        frame_wait();
         pad_poll(0);
        
         if (PAD_STATE[0] & (PAD_SELECT | PAD_START)) {
@@ -857,7 +863,7 @@ GameState title_menu_loop(void) {
 	pad_count = 0;
     
     while (1) {
-        ppu_wait_nmi();
+        frame_wait();
         pad_poll(0);
         pad_poll(1);
         // Every 4 frames toggle track animation
@@ -920,7 +926,7 @@ GameState title_menu_loop(void) {
 static void draw_converging_shutters(void) {
     
     for (i = 0; i < 0x10; ++i) {
-        ppu_wait_nmi();
+        frame_wait();
         
         // Fill from top
         dst = (unsigned char*)(NAMETABLE_A + COORD_TO_NT_OFFSET(0, i));
@@ -1035,7 +1041,7 @@ GameState stage_select_loop(void) {
     }
 
     oam_clear();
-    ppu_wait_nmi();
+    frame_wait();
     vram_adr(NAMETABLE_A);
     scroll(0, 0);
     pause_flag = 0;
@@ -1044,7 +1050,7 @@ GameState stage_select_loop(void) {
     draw_converging_shutters();
 
     while (1) {
-        ppu_wait_nmi();
+        frame_wait();
         draw_stage_display();
         
         if (skip_stage_select_flag) {
@@ -1064,7 +1070,7 @@ static void draw_diverging_shutters(void) {
     static unsigned char top_row, bot_row;
     
     for (temp = 0xF; temp != 0xFF; --temp) {
-        ppu_wait_nmi();
+        frame_wait();
         
         // top row (counting down from middle to top)
         top_row = temp;
@@ -1185,7 +1191,7 @@ static void reset_stage_vars(){
     enemy_freeze_timer = 0;
     enemy_respawn_place_index = 0;
     skip_stage_select_flag = 1;
-    hq_status = 0x80;
+
 
     for(i = 0; i < sizeof(killcount_1p); ++i){
         killcount_1p[i] = 0;
@@ -1194,11 +1200,13 @@ static void reset_stage_vars(){
     temp = stage_mode == 1 ? 35 : stage_number;
     cnt = cursor_pos > 0? 20 : 0;
     respawn_delay = 190 - (temp << 2) - cnt;
-    ppu_wait_nmi(); 
+    frame_wait(); 
     load_reinforcements_icons();
     load_Ip_icons();
     load_level_flag();
     set_enemy_count();
+    hq_status = 0x80;
+    sound_play_background(SND_ENGINE);
 }
 
 // input: raw joypad byte — returns 0=up 1=left 2=down 3=right 0xFF=none
@@ -1252,7 +1260,7 @@ static void handle_input(){
         if (player_ice_status[cnt] & 0x80) {
             if ((player_ice_status[cnt] & 0x1F) == 0) {
                 player_ice_status[cnt] = 0x80 | 0x1C;  // 28 frames of sliding
-                //snd_ice = 1;
+                sound_play(SND_ICE);
             }
         }
         // apply new direction, command stays $A 
@@ -1445,7 +1453,7 @@ static void make_shot() {
 
     // Sound for player shots only
     if (i < 2) {
-        // snd_shoot = 1;   // ToDo: uncomment when sound is implemented
+        sound_play(SND_SHOOT);
     }
 
     // Direction is lower 2 bits of tank status, OR'd with 0x40 = flying
@@ -1716,8 +1724,8 @@ static unsigned char bullet_bg_impact() {
     if ((temp & 0xFC) == 0xC8) {
         if (hq_status != 0) {
             hq_status = 0x27;       // initial explosion frame
-            // snd_hq_explode = 1;
-            // snd_player_explode = 1;
+            sound_play(SND_HQ_EXPLODE);
+            sound_play(SND_PLAYER_EXPLODE);
             draw_destroyed_hq();
             bullet_status[i] = 0x33;
         }
@@ -1734,7 +1742,7 @@ static unsigned char bullet_bg_impact() {
     // Screen border ($11) – no tile destruction
     if (temp == TILE_GREY) {
         if (i < 2) {
-            // snd_armour_ricochet_wall = 1;
+            sound_play(SND_ARMOUR_RICOCHET_WALL);
         }
         return 0;
     }
@@ -1743,14 +1751,14 @@ static unsigned char bullet_bg_impact() {
     if (bullet_property[i] & 0x02) {
         buffer_and_vram_fill(temp16, 0, 1);
         if (i < 2) {
-            // snd_brick_ricochet = 1;
+            sound_play(SND_BRICK_RICOCHET);
         }
         return 0;
     }
     // armour ($10) without armor-piercing, no destruction
     if (temp == TILE_ARMOR) {
         if (i < 2) {
-            // snd_armour_ricochet_wall = 1;
+            sound_play(SND_ARMOUR_RICOCHET_WALL);
         }
         return 0;
     }
@@ -1758,7 +1766,7 @@ static unsigned char bullet_bg_impact() {
     temp &= ~cnt;
     buffer_and_vram_fill(temp16, temp, 1);
     if (i < 2) {
-        // snd_brick_ricochet = 1;
+        sound_play(SND_BRICK_RICOCHET);
     }
     return 1;
 }
@@ -1860,8 +1868,8 @@ void add_life() {
     if (player_add_life_flag[0] == 0 && hiscore_1p_string[2] >= 2) {
         player_lives[0]++;
         player_add_life_flag[0] = 1;
-        //snd_ancillary_life1 = 1; //TODO: implement with sound engine
-        //snd_ancillary_life2 = 1;
+        sound_play(SND_ANCILLARY_LIFE1);
+        sound_play(SND_ANCILLARY_LIFE2);
         return;
     }
 
@@ -1871,8 +1879,8 @@ void add_life() {
     if (hiscore_2p_string[2] < 2) return;
     player_lives[1]++;
     player_add_life_flag[1] = 1;
-    //snd_ancillary_life1 = 1;//TODO: implement with sound engine
-    //snd_ancillary_life2 = 1;
+    sound_play(SND_ANCILLARY_LIFE1);
+    sound_play(SND_ANCILLARY_LIFE2);
 }
 
 
@@ -1933,7 +1941,7 @@ static void bonus_star() {
 
 static void bonus_grenade() {
     //cnt - iterator
-    //snd_enemy_explode = 1;//TODO: implement with sound engine
+    sound_play(SND_ENEMY_EXPLODE);
     for (cnt = 7; cnt >= 2; --cnt) {
         if (tank_status[cnt] >= 0x80 && tank_status[cnt] < 0xE0) {
             tank_status[cnt] = 0x73;
@@ -1944,8 +1952,8 @@ static void bonus_grenade() {
 
 static void bonus_life() {
     player_lives[i]++;
-    //snd_ancillary_life1 = 1;//TODO: implement with sound engine
-    //snd_ancillary_life2 = 1;
+    sound_play(SND_ANCILLARY_LIFE1);
+    sound_play(SND_ANCILLARY_LIFE2);
 }
 
 static void bonus_pistol() {
@@ -1992,7 +2000,7 @@ void handle_bonus_collision(void) {
             num_to_num_string(0x50);           // 500 points
             add_score(i);
             add_life();
-            //snd_bonus_taken = 1; TODO: implement with sound engine
+            sound_play(SND_BONUS_TAKEN);
         }
         handle_bonus();
         return;
@@ -2016,7 +2024,7 @@ static unsigned char multiply_bonus_coord(unsigned char n) {
 static void bonus_appear_handle(void) {
     static const unsigned char BonusNumberTable[8] = { 0, 1, 2, 3, 4, 5, 4, 3 };
 
-    //snd_bonus_appears = 1;//TODO: implement with sound engine
+    sound_play(SND_BONUS_APPEARS);
     do {
         bonus_x = multiply_bonus_coord(get_random() & 3);
         bonus_y = multiply_bonus_coord(get_random() & 3);
@@ -2070,7 +2078,7 @@ static void handle_bullet_tank_collisions(void) {
 
             // Player destroyed
             tank_status[i] = 0x73;        // explosion command
-            // snd_player_explode = 1;
+            sound_play(SND_PLAYER_EXPLODE);
             player_type[i] = 0;           // reset to basic tank
             tank_type[i] = 0;
             goto next_player;             // skip remaining bullets for this tank
@@ -2108,13 +2116,13 @@ static void handle_bullet_tank_collisions(void) {
             // Tank has armour? Reduce it, tank survives
             if ((tank_type[i] & 3) != 0) {
                 --tank_type[i];//TODO: optimize surprizingly large code
-                // snd_armour_ricochet_tank = 1;
+                sound_play(SND_ARMOUR_RICOCHET_TANK);
                 continue;
             }
 
             // No armour → destroy enemy
             tank_status[i] = 0x73;
-            // snd_enemy_explode = 1;//TODO:implement with sound engine
+            sound_play(SND_ENEMY_EXPLODE);
 
             if (stage_mode != STAGE_MODE_DEMO) {
                 cnt = (tank_type[i] >> 5) & 7; // 0..7
@@ -2258,7 +2266,7 @@ static void draw_pts_screen_template(void)
         0x5C, 0x5C, 0x5C, 0x5C, 0x5C, 0x5C, 0x5C, 0x5C   /* aLine */
     };
 
-    ppu_wait_nmi();
+    frame_wait();
     scroll(0, 0);
     set_bg_pal_number(3);
 
@@ -2322,7 +2330,7 @@ static void draw_pts_screen_template(void)
 
     add_vram_cpy_based_cmd(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x0D + k, 5), &number_string[k], cnt, 0x30);
 
-    ppu_wait_nmi();
+    frame_wait();
     ppu_mask(MASK_SHOW_ALL);
 
     /*
@@ -2368,7 +2376,7 @@ static void draw_pts_screen_template(void)
     );
     //Draw second player, if it was 2p game
     if (cursor_pos != 0) {
-        ppu_wait_nmi();
+        frame_wait();
 
         /*
             Draw:
@@ -2417,7 +2425,7 @@ static void draw_pts_screen_template(void)
         );
     }
 
-    ppu_wait_nmi();
+    frame_wait();
 
     /* PTS left column */
     add_vram_cpy_cmd(
@@ -2443,7 +2451,7 @@ static void draw_pts_screen_template(void)
 
     /* PTS right column only in 2-player mode */
     if (cursor_pos != 0) {
-        ppu_wait_nmi();
+        frame_wait();
 
         add_vram_cpy_cmd(
             NAMETABLE_C+ COORD_TO_NT_OFFSET(0x1A, 0x0C),
@@ -2467,7 +2475,7 @@ static void draw_pts_screen_template(void)
         );
     }
 
-    ppu_wait_nmi();
+    frame_wait();
 
     /* Line above TOTAL */
     add_vram_cpy_cmd(
@@ -2494,7 +2502,7 @@ static void draw_tank_column(void)
 static void draw_tank_column_xtimes(unsigned char count)
 {
     while (count != 0) {
-        ppu_wait_nmi();
+        frame_wait();
         draw_tank_column();
         --count;
     }
@@ -2583,7 +2591,7 @@ static void draw_pts_screen(void)
     }
     y = 0;
     while (1) {
-        ppu_wait_nmi();
+        frame_wait();
         draw_tank_column();
 
         init_8_char_string(temp_1p_pts_string);
@@ -2602,7 +2610,7 @@ static void draw_pts_screen(void)
         j = (unsigned char)((y * 3) + 0x0C);
 
         do {
-            ppu_wait_nmi();
+            frame_wait();
             draw_tank_column();
             temp = 0;
             num_to_num_string(tank_kill_pts[y]);
@@ -2614,7 +2622,8 @@ static void draw_pts_screen(void)
                 add_number_to_temp_string(temp_1p_pts_string);
                 temp = 1;
 
-                /* TODO: original sets Snd_PtsCount1/Snd_PtsCount2 here. */
+                sound_play(SND_PTS_COUNT1);
+                sound_play(SND_PTS_COUNT2);
                 add_life();
             }
             if (killcount_2p[y] != 0) {
@@ -2623,7 +2632,8 @@ static void draw_pts_screen(void)
                 add_number_to_temp_string(temp_2p_pts_string);
                 temp = 1;
 
-                /* TODO: original sets Snd_PtsCount1/Snd_PtsCount2 here. */
+                sound_play(SND_PTS_COUNT1);
+                sound_play(SND_PTS_COUNT2);
                 add_life();
             }
             draw_score_digits(hiscore_1p_string, 4, 9);
@@ -2680,7 +2690,7 @@ static void draw_pts_screen(void)
                 pts_label,
                 sizeof(pts_label) - 1);
 
-            /* TODO: original sets Snd_BonusPts here. */
+            sound_play(SND_BONUS_PTS);
             add_life();
         }
         else if (total_kills_1p < total_kills_2p && player_lives[1] != 0) {
@@ -2702,7 +2712,7 @@ static void draw_pts_screen(void)
                 pts_label,
                 sizeof(pts_label) - 1);
 
-            /* TODO: original sets Snd_BonusPts here. */
+            sound_play(SND_BONUS_PTS);
             add_life();
         }
     }
@@ -2739,6 +2749,31 @@ static unsigned char level_end_check(void)
     return 1;
 }
 
+static unsigned char detect_motion(unsigned char id) {
+    if (!(PAD_STATE[id] & (PAD_UP | PAD_DOWN | PAD_LEFT | PAD_RIGHT)))
+        return 0;                          // no direction held
+    if (tank_status[id] == 0)
+        return 0;                          // no tank
+    return 1;
+}
+
+//TODO: zp
+static void play_snd_move(void) {
+    unsigned char moving = detect_motion(0) || detect_motion(1);
+
+    if (moving) {
+        if (!snd_move_active || !sound_is_playing(SND_MOVE)) {
+            if (sound_play(SND_MOVE))
+                snd_move_active = 1;
+        }
+    } else {
+        if (snd_move_active) {
+            snd_move_active = 0;
+            sound_stop(SND_MOVE);
+        }
+    }
+}
+
 //Main operations processed during gameplay frame (not in pause)
 static void handle_gameplay(){
 
@@ -2758,7 +2793,7 @@ static void handle_gameplay(){
     handle_bullet_tank_collisions();
     handle_bonus_collision();
     gameover_str_handle();
-    //play_snd_move();//TODO:implement on sound engine
+    play_snd_move();
     draw_player_lives();
     swap_water_pal_colors();    
 }
@@ -2775,6 +2810,11 @@ static void make_gray_frame(void) {
 
 GameState stage_start_loop(void) {
 
+    sound_stop_all();
+    sound_play(SND_BATTLE1);
+    sound_play(SND_BATTLE2);
+    sound_play(SND_BATTLE3);
+
     if (construction_flag == 0) {
         make_gray_frame();
         load_stage();
@@ -2783,24 +2823,21 @@ GameState stage_start_loop(void) {
         draw_naked_hq();
     }
 
+
     reset_vram_cmd_queue();//hq was written to commands buffer, dont dump it to vram: it should not be shown on top of grey screen
     draw_diverging_shutters();
 
     set_bg_pal_number(0);
-    ppu_wait_nmi();//Copy palette and also process commands buffer (may not fit into single NMI)
+    frame_wait();//Copy palette and also process commands buffer (may not fit into single NMI)
     reset_stage_vars();	
 	return STATE_GAMEPLAY;	
 }
 
 static void stop_move_engine_sounds(void)
 {
-    //TODO: implement with sound engine
-    /* snd_move = 0; snd_engine = 0; */
-}
-
-static void sound_stop(void)
-{
-    /* TODO: implement with sound engine */
+    snd_move_active = 0;
+    sound_stop(SND_MOVE);
+    sound_stop(SND_ENGINE);
 }
 
 static void freeze_player_on_hq_destroy(void)
@@ -2828,7 +2865,7 @@ static void after_death_battle_run(void)
         SECONDS_CNT = 0xFE;
 
     do {
-        ppu_wait_nmi();
+        frame_wait();
 
         pad_poll(0);
         pad_poll(1);
@@ -2859,7 +2896,7 @@ static void after_death_battle_run(void)
 GameState gameplay_loop(void) {
     unsigned char id;
     while(1){
-        ppu_wait_nmi();
+        frame_wait();
         pad_poll(0);
         pad_poll(1);
 
@@ -2873,21 +2910,25 @@ GameState gameplay_loop(void) {
         }
         if (PAD_STATET[0] & PAD_START) {
             pause_flag ^= 1;
-            // TODO: pause/unpause sound engine here
+            sound_set_paused(pause_flag);
+            if (pause_flag) 
+                sound_play(SND_PAUSE);
         }
         render_pause();
         if (level_end_check())
             break;
     }
-	    /* Stop timers/movement sounds like original. */
+    /* Stop timers/movement sounds like original. */
     SECONDS_CNT = 0;
     FRAME_CNT = 0;
+    pause_flag = 0;
+    sound_set_paused(0);
     stop_move_engine_sounds();
     /* Run the original after-death battle loop. */
     if (gameover_str_timer != 0)
         SECONDS_CNT = 0xFE;
     after_death_battle_run();
-    sound_stop();
+    sound_stop_all();
     draw_pts_screen();
 
     /* Advance stage like original. */
@@ -2995,10 +3036,13 @@ static void draw_brick_gameover(void)
         Sound is not implemented yet, so use a fixed delay.
         START/SELECT skips it, like original.
     */
+    sound_play(SND_GAME_OVER1);
+    sound_play(SND_GAME_OVER2);
+    sound_play(SND_GAME_OVER3);
     temp16 = 0;
 
     while (temp16 < 180) {
-        ppu_wait_nmi();
+        frame_wait();
         pad_poll(0);
 
         if (PAD_STATET[0] & (PAD_SELECT | PAD_START)) {
@@ -3019,7 +3063,7 @@ static void draw_brick_gameover(void)
     set_ppu();
     ppu_mask(MASK_SHOW_ALL);
 
-    sound_stop();
+    sound_stop_all();
 }
 
 static void draw_record_digit(void)
@@ -3071,10 +3115,13 @@ static void draw_record_hiscore(void)
         Sound is not implemented yet, so use a fixed delay
         and blink palette like original.
     */
+    sound_play(SND_RECORD_PTS1);
+    sound_play(SND_RECORD_PTS2);
+    sound_play(SND_RECORD_PTS3);
     temp16 = 0;
 
     while (temp16 < 180) {
-        ppu_wait_nmi();
+        frame_wait();
         set_bg_pal_number((unsigned char)(5 + (temp16 & 3)));
         ++temp16;
     }
@@ -3183,7 +3230,7 @@ GameState construction_loop(void) {
     }
 
     while (1) {
-        ppu_wait_nmi();
+        frame_wait();
         pad_poll(0);
 
         move_tank_construction();
@@ -3254,6 +3301,7 @@ void main (void) {
 
 	
 	ppu_off(); 
+    sound_init(); 
 	reset_screen();	
 	set_ppu();
 	draw_title_screen();
