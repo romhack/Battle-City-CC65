@@ -72,6 +72,7 @@ snd_ptr:        .res 2      ; scratch ROM stream pointer
 snd_temp:       .res 1      ; scratch (frequency LUT shift, opcode dispatch)
 snd_temp2:      .res 1      ; scratch
 snd_id:         .res 1      ; scratch: id being processed by sound_play
+snd_muted:      .res 1
 
 ; Total ZP usage: 5 bytes 
 
@@ -119,6 +120,7 @@ PAUSE_CHANNEL = 1            ; Sound_Pause's data always says channel 2
 .export _sound_set_paused
 .export _sound_keepalive
 .export _sound_is_playing
+.export _sound_set_muted
 
 SND_MASTERCTRL_REG = $4015
 SND_FRAMECOUNTER   = $4017
@@ -130,6 +132,7 @@ _sound_init:
     sta SND_FRAMECOUNTER        ; disable frame IRQ (matches original)
     lda #0
     sta snd_paused
+    sta snd_muted 
     sta loop_counter+0
     sta loop_counter+1
     sta loop_counter+2
@@ -161,6 +164,11 @@ _sound_stop_all:
     dex
     bpl @loop
     rts
+
+_sound_set_muted:
+    sta snd_muted
+    rts
+
 
 ; Re-pushes every currently-playing channel's cached registers to
 ; hardware unconditionally (bypassing chan_dirty) -- this reloads
@@ -300,8 +308,13 @@ _sound_stop:
 ; once (e.g. by the stage-start jingle still playing) is lost for
 ; good, with nothing left to ever ask again.
 _sound_play:
+    ldx snd_muted
+    bne @muted
     jsr resolve_channel
     jmp try_allocate
+    @muted:
+    lda #0
+    rts
 
 ; A = id to request as this channel's background/ambient sound (see
 ; design note 7). Registers it so it auto-resumes whenever its channel
@@ -310,10 +323,15 @@ _sound_play:
 ; the claim is silently deferred and happens automatically once that
 ; sound finishes or is sound_stop()'d.
 _sound_play_background:
+    ldx snd_muted
+    bne @muted
     jsr resolve_channel
     lda snd_id
     sta chan_underlay,x
     jmp try_allocate
+    @muted:
+    lda #0
+    rts
 
 ; ----------------------------------------------------------------------
 ; Internal: A = sound id -> snd_id = id, snd_ptr = its stream base,

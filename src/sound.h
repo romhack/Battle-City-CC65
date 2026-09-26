@@ -123,6 +123,8 @@ unsigned char __fastcall__ sound_is_playing(unsigned char id);
  * playing -- it just holds on the current note until sound_update()
  * resumes. Does not need to run at any particular rate; call it every
  * so often inside the stall's own loop. */
-void sound_keepalive(void);
+void __fastcall__ sound_keepalive(void);
+
+void __fastcall__ sound_set_muted(unsigned char muted);
 
 #endif

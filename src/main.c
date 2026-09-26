@@ -861,6 +861,7 @@ GameState title_menu_loop(void) {
 	player_blink_timer[0] = 0;
 	player_blink_timer[1] = 0;
 	pad_count = 0;
+    SECONDS_CNT = 0;
     
     while (1) {
         frame_wait();
@@ -1211,11 +1212,11 @@ static void reset_stage_vars(){
 
 // input: raw joypad byte — returns 0=up 1=left 2=down 3=right 0xFF=none
 unsigned char button_to_direction(unsigned char pad) {
-    static const unsigned char btn_to_dir[16] = {
-        0xFF, 3,    1,    3,    2,    3,    2,    3,
-        0,    3,    1,    3,    2,    3,    2,    3
-    };
-    return btn_to_dir[pad & 0x0F];
+    if (pad & PAD_UP)    return 0;
+    if (pad & PAD_LEFT)  return 1;
+    if (pad & PAD_DOWN)  return 2;
+    if (pad & PAD_RIGHT) return 3;
+    return 0xFF;
 }
 
 static void handle_input(){
@@ -2105,7 +2106,7 @@ static void handle_bullet_tank_collisions(void) {
             // Collision
             bullet_status[j] = 0x33;
 
-            // Bonus tank → spawn item (to be implemented)
+            // Bonus tank → spawn item
             if (tank_type[i] & 4) {
                 //i will be modified by underlying functions of bonus_appear_handle
                 k = i;
@@ -2563,7 +2564,7 @@ static void draw_pts_screen(void)
     static const unsigned char tank_kill_pts[4] = {
         0x10, 0x20, 0x30, 0x40
     };
-
+    //BONUS! string
     static const unsigned char bonus_label[] = {
         0x42, 0x4F, 0x4E, 0x55, 0x53, 0x15
     };
@@ -2716,7 +2717,7 @@ static void draw_pts_screen(void)
             add_life();
         }
     }
-    draw_tank_column_xtimes(0x1E);
+    draw_tank_column_xtimes(120);//just wait 120 frames after drawing everything on screen
     set_bg_pal_number(0);
 }
 static void init_gameover_str_center(void)
@@ -2759,8 +2760,10 @@ static unsigned char detect_motion(unsigned char id) {
 
 //TODO: zp
 static void play_snd_move(void) {
-    unsigned char moving = detect_motion(0) || detect_motion(1);
+    static unsigned char moving;
+    if (stage_mode == STAGE_MODE_DEMO) return;  // silent during demo
 
+    moving = detect_motion(0) || detect_motion(1);
     if (moving) {
         if (!snd_move_active || !sound_is_playing(SND_MOVE)) {
             if (sound_play(SND_MOVE))
@@ -3031,25 +3034,17 @@ static void draw_brick_gameover(void)
     scroll(0, 0); 
     ppu_mask(MASK_SHOW_ALL);
 
-    /*
-        TODO: Original waits for Snd_GameOver1 to finish.
-        Sound is not implemented yet, so use a fixed delay.
-        START/SELECT skips it, like original.
-    */
     sound_play(SND_GAME_OVER1);
     sound_play(SND_GAME_OVER2);
     sound_play(SND_GAME_OVER3);
-    temp16 = 0;
 
-    while (temp16 < 180) {
+    while (sound_is_playing(SND_GAME_OVER1)) {
         frame_wait();
         pad_poll(0);
 
         if (PAD_STATET[0] & (PAD_SELECT | PAD_START)) {
             break;
         }
-
-        ++temp16;
     }
 
     /* Original End_Draw_Brick_GameOver clears the name table. */
@@ -3090,7 +3085,7 @@ static void draw_record_digit(void)
 
 static void draw_record_hiscore(void)
 {
-    //temp16 - wait frames count
+    //temp - counter for palette effect
     static const unsigned char hiscore_str[] = {
         'H', 'I', 'S', 'C', 'O', 'R', 'E', 0xFF
     };
@@ -3110,22 +3105,16 @@ static void draw_record_hiscore(void)
     set_ppu();
     ppu_mask(MASK_SHOW_ALL);
 
-    /*
-        TODO: Original waits for Snd_RecordPts1 to finish.
-        Sound is not implemented yet, so use a fixed delay
-        and blink palette like original.
-    */
     sound_play(SND_RECORD_PTS1);
     sound_play(SND_RECORD_PTS2);
     sound_play(SND_RECORD_PTS3);
-    temp16 = 0;
-
-    while (temp16 < 180) {
+    
+    temp = 0;
+    while (sound_is_playing(SND_RECORD_PTS1)) {
         frame_wait();
-        set_bg_pal_number((unsigned char)(5 + (temp16 & 3)));
-        ++temp16;
+        set_bg_pal_number((unsigned char)(5 + (temp & 3)));
+        ++temp;
     }
-
     set_bg_pal_number(0);
 }
 
@@ -3275,9 +3264,201 @@ GameState construction_loop(void) {
     return STATE_TITLE_MENU;
 }
 
+
+
+//TODO:zp
+// Demo AI: decides where each player tank should aim, then writes the
+// corresponding joypad state into PAD_STATE so handle_input() picks it up.
+// Mirrors the original Demo_AI subroutine.
+static void demo_ai(void) {
+    // Joypad bytes the demo AI writes for each direction (includes A+B for firing)
+    // Index: 0=up, 1=left, 2=down, 3=right
+    static const unsigned char demo_tank_direction[4] = {
+        PAD_UP    | PAD_A | PAD_B,   // 0 = up
+        PAD_LEFT  | PAD_A | PAD_B,   // 1 = left
+        PAD_DOWN  | PAD_A | PAD_B,   // 2 = down
+        PAD_RIGHT | PAD_A | PAD_B,   // 3 = right
+    };
+    unsigned char player;
+    unsigned char dir;
+    unsigned char target_found;
+
+    for (player = 1; player != 0xFF; --player) {
+        target_found = 0;
+
+        // Priority 1: grab a live bonus on the field
+        if (bonus_x != 0 && bonus_timer == 0) {
+            ai_x_aim = bonus_x;
+            ai_y_aim = bonus_y;
+            target_found = 1;
+        }
+
+        // Priority 2: chase the first live enemy found.
+        // Original probe order relative to player index: +2, +4, +3
+        if (!target_found) {
+            static const unsigned char offsets[3] = { 2, 4, 3 };
+            unsigned char oi;
+            for (oi = 0; oi < 3; ++oi) {
+                unsigned char eid = player + offsets[oi];
+                if (eid >= 8) continue;
+                if (tank_status[eid] < 0x80)  continue; // dying/exploding
+                if (tank_status[eid] >= 0xE0) continue; // spawning
+                ai_x_aim = tank_x[eid];
+                ai_y_aim = tank_y[eid];
+                target_found = 1;
+                break;
+            }
+        }
+
+        if (target_found) {
+            dir = get_ai_status(player) & 0x03;
+            PAD_STATE[player]  = demo_tank_direction[dir];
+            PAD_STATET[player] = demo_tank_direction[dir];
+        } else {
+            PAD_STATE[player]  = 0;
+            PAD_STATET[player] = 0;
+        }
+
+        // Don't let tanks drive off the bottom of the screen
+        if (tank_y[player] >= 0xC8) {
+            PAD_STATET[player] &= 0x0F; // clear direction bits
+        }
+    }
+}
+
+// Load the demo level into the screen buffer, draw title brick text over it,
+// then set up all gameplay variables.  Mirrors Load_DemoLevel + SetUp_LevelVARs.
+static void setup_demo_level(void) {
+    // --- video setup ---
+    ppu_off();
+    make_gray_frame();
+
+    // Load demo level data (36th entry in the levels array)
+    stage_number = 36;
+    load_stage();
+
+    // Overlay the BATTLE / CITY title text at the same positions as the
+    // title screen so the transition looks seamless.
+    {
+        static const unsigned char battle_str[] = "BATTLE\xFF";
+        static const unsigned char city_str[]   = "CITY\xFF";
+        draw_brick_str(battle_str, 0x1A, 0x46);
+        draw_brick_str(city_str,   0x3C, 0x78);
+    }
+
+    vram_adr(NAMETABLE_A);
+    vram_write(SCREEN_BUFFER, 1024);
+    set_ppu();
+    ppu_mask(MASK_SHOW_ALL);
+    scroll(0, 0);
+
+    // --- gameplay variables (subset of reset_stage_vars, no engine sound) ---
+    // Init_Level_VARs equivalent
+    player_type[0] = 0;
+    player_type[1] = 0;
+    player_add_life_flag[0] = 0;
+    player_add_life_flag[1] = 0;
+    skip_stage_select_flag = 0;
+    player_lives[0] = 3;
+    player_lives[1] = 3;          // demo always has two players
+    enemy_respawn_place_index = 3;
+    stage_mode = STAGE_MODE_DEMO; // 2
+
+    // Display stage "30" in the corner (original shows 30 during demo)
+    stage_number = 30;
+
+    // SetUp_LevelVARs equivalent (no Snd_Engine)
+    for (i = 0; i < sizeof(bullet_status); ++i) bullet_status[i] = 0;
+    for (i = 0; i < sizeof(tank_status);   ++i) tank_status[i]   = 0;
+    for (i = 0; i < sizeof(player_ice_status); ++i) player_ice_status[i] = 0;
+
+    gameover_str_timer = 0;
+    gameover_str_y     = 0xF0;
+
+    initialize_tank(0);
+    initialize_tank(1);
+
+    enemy_reinforce_count     = 20;
+    enemy_counter             = 20;
+    enemy_type_number         = 0;
+    SECONDS_CNT               = 0;
+    construction_flag         = 0;
+    hq_armor_timer            = 0;
+    player_blink_timer[0]     = 0;
+    player_blink_timer[1]     = 0;
+    invincible_timer[0]       = 0;
+    invincible_timer[1]       = 0;
+    respawn_timer             = 0;
+    bonus_x                   = 0;
+    enemy_freeze_timer        = 0;
+    enemy_respawn_place_index = 0;
+    hq_status                 = 0x80;
+    draw_normal_hq();
+
+    for (i = 0; i < 4; ++i) {
+        killcount_1p[i] = 0;
+        killcount_2p[i] = 0;
+    }
+
+    // Respawn delay: same formula as original (190 - stage*4 - 20 for 2P)
+    respawn_delay = 190 - (30 << 2) - 20;
+
+    max_tanks_count = 5;  // original: 1 player + 4 enemies in demo
+
+    frame_wait();
+    load_reinforcements_icons();
+    load_Ip_icons();
+    load_level_flag();
+    set_enemy_count();
+
+    // NO sound_play_background(SND_ENGINE) here — demo is silent
+}
+
+//TODO:zp
 GameState demoplay_loop(void) {
-	
-	return STATE_TITLE_MENU;	
+    unsigned char pressed_exit = 0;
+    unsigned char id;   // local counter — do not use global "i" here
+
+    sound_stop_all();
+    sound_set_muted(1);
+    setup_demo_level();
+
+    while (1) {
+        frame_wait();
+        pad_poll(0);
+        pad_poll(1);
+        if (PAD_STATET[0] & (PAD_SELECT | PAD_START)) {
+            pressed_exit = 1;
+            break;
+        }
+        demo_ai();
+        handle_gameplay();
+        render_bonus();
+        for (id = 0; id < 8; ++id) render_tank(id);
+        render_bullets();
+        if (level_end_check())
+            break;
+    }
+
+    sound_set_muted(0);
+    sound_stop_all();
+    pause_flag = 0;
+    reset_vram_cmd_queue();   // drop any queued demo-frame VRAM writes before either exit
+
+    ppu_off();
+    set_bg_pal_number(3);
+    memfill(SCREEN_BUFFER, 0, 1024);
+    vram_adr(NAMETABLE_A);
+    vram_write(SCREEN_BUFFER, 1024);
+    set_ppu();
+    ppu_mask(MASK_SHOW_ALL); 
+
+    if (pressed_exit) {
+        scroll(0, 240);
+        return STATE_TITLE_MENU;
+    }
+
+    return STATE_TITLE_INTRO;
 }
 
 
