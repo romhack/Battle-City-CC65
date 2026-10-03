@@ -1,7 +1,7 @@
 ;Hardware-dependent functions to be implemented in assembly specific for game
 
 .export _draw_brick_char, _set_bg_pal_number, _reset_vram_cmd_queue, _add_vram_fill_cmd, _add_vram_cpy_cmd, _add_vram_cpy_based_cmd 
-.export _add_sprite, _add_sprite_16x16
+.export _add_sprite_, _add_sprite_16x16_
 
 ;void __fastcall__ draw_brick_char(unsigned char ascii_char, unsigned char x, unsigned char y);
 
@@ -389,34 +389,36 @@ _add_vram_cpy_cmd_body:
 ;CHR_BYTE - sprite index
 ;SPR_X, SPR_Y - coordinates
 ;TEMP_VAR - attribute
-write_oam_entry:   
+write_oam_entry:
     ldx SPRID
     lda CHR_BYTE
-	sta OAM_BUF+1,x
+    sta OAM_BUF+1,x
     lda SPR_Y
     sec
-    sbc #8              ;both halves sprite will have Y - 8, as coordinates are of center of metasprite
-	sta OAM_BUF+0,x     
+    sbc #8
+    sta OAM_BUF+0,x
     lda SPR_X
-	sta OAM_BUF+3,x
+    sta OAM_BUF+3,x
+
+    lda SPR_PRIORITY
+    beq @skip_forest_check      ; ora with 0 can't change anything - don't bother looking up the tile
     jsr _set_ptr_to_scrn_buffer
     ldy #0
     lda (PTR),Y
-    cmp #$22            ;Check for tank sprite intersecting forest: $22 in Pattern Table - forest tile
-    bne @skip_attrib
+    cmp #$22
+    bne @skip_forest_check
     lda TEMP_VAR
-    ora SPR_PRIORITY            ;Switch to OAM_BEHIND/FRONT
+    ora SPR_PRIORITY
     sta TEMP_VAR
-@skip_attrib:
+@skip_forest_check:
     lda TEMP_VAR
     sta OAM_BUF+2,x
 
-	txa
-	clc
-	adc SPRSTEP
-	sta SPRID
-	rts       
-
+    txa
+    clc
+    adc SPRSTEP
+    sta SPRID
+    rts
 ; Sets PTR to the SCREEN_BUFFER at SPR_X and SPR_Y, used at add_sprite functions to check forest tile
 _set_ptr_to_scrn_buffer:
 
@@ -450,29 +452,10 @@ _set_ptr_to_scrn_buffer:
     sta <PTR
     rts
 
-;void __fastcall__ add_sprite(unsigned char x,unsigned char y,unsigned char chrnum,unsigned char pal);
-_add_sprite:  
-; Left half
-    sta TEMP_VAR        ;A has attribute    
-	ldy #0		        ;3 popa calls replacement
-	lda (sp),y          ;chr number
-	iny
-    sta CHR_BYTE
-	lda (sp),y          ;Y
-    iny
-    sta SPR_Y   
-	lda (sp),y          ;X
-    sta SPR_X
-    jsr write_oam_entry
-
-	lda <sp
-	clc
-	adc #3 ;4
-	sta <sp
-	bcc @1
-	inc <sp+1
-@1:
-	rts  
+;void __fastcall__ add_sprite_(unsigned char pal);
+_add_sprite_:
+    sta TEMP_VAR            ; pal, passed in A via fastcall
+    jmp write_oam_entry     ; tail call - write_oam_entry's rts returns straight to our caller 
 
 ;Writes to OAM buffer and advances to next slot (second half of a 16x16
 ;sprite). Reuses the Y-derived pointer bits (TEMP, PTR+1) left behind by
@@ -516,41 +499,25 @@ write_oam_entry_x_only:
     sta SPRID
     rts    
 
-;void __fastcall__ add_sprite_16x16(unsigned char x,unsigned char y,unsigned char chrnum,unsigned char pal);
-_add_sprite_16x16:
-    sta TEMP_VAR
+;void __fastcall__ add_sprite_16x16_(unsigned char pal);
+_add_sprite_16x16_:
+    sta TEMP_VAR            ; pal from A
     pha
-    ldy #0
-    lda (sp),y
-    iny
-    sta CHR_BYTE
-    lda (sp),y
-    iny
-    sta SPR_Y
-    lda (sp),y
-    pha
+    lda SPR_X
+    pha                     ; save original X for the right half
     sec
     sbc #8
-    sta SPR_X
-    jsr write_oam_entry          ; full pointer calc (X+Y) - unchanged
+    sta SPR_X               ; left half X = x - 8
+    jsr write_oam_entry
 
-; Right half
     pla
-    sta SPR_X
+    sta SPR_X               ; restore X for the right half
     pla
     sta TEMP_VAR
     lda CHR_BYTE
     clc
     adc #2
     sta CHR_BYTE
-    jsr write_oam_entry_x_only   ; reuse cached Y bits, only redo X
-
-    lda <sp
-    clc
-    adc #3
-    sta <sp
-    bcc @1
-    inc <sp+1
-@1:
-    rts
+    jsr write_oam_entry_x_only
+    rts                    
 	

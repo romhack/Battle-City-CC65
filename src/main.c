@@ -7,7 +7,6 @@
 #include "sound.h"
 #include "levels.h"
 
-//todo: move gamover to specified function of gameover handle
 static unsigned char gameover_str_x;
 static unsigned char gameover_str_y;
 static unsigned char gameover_scroll_dir;
@@ -33,6 +32,13 @@ static const unsigned char dy[4] = { 0xFF,  0,  1,  0 };
 static const unsigned char dx8[4] = { 0, 0xF8,  0,  8 };
 static const unsigned char dy8[4] = { 0xF8,  0,  8,  0 };
 
+// abs(dx[k]) and abs(dy[k]), precomputed - dx/dy only ever hold 0 or ±1
+static const unsigned char abs_dx[4]      = { 0, 1, 0, 1 };
+static const unsigned char abs_dy[4]      = { 1, 0, 1, 0 };
+static const unsigned char abs_dx_quad[4] = { 0, 4, 0, 4 };   // abs_dx[k] << 2
+static const unsigned char abs_dy_quad[4] = { 4, 0, 4, 0 };   // abs_dy[k] << 2
+
+
 static const unsigned char PlayerBulletIds[] = {0, 1, 8, 9};
 
 
@@ -53,6 +59,12 @@ unsigned char is_cold_boot(void) {
 }
 
 
+// Sprite helper functions to optimize passing through stack arguments via fixed zp variables
+#define add_sprite(x, y, tile, pal) \
+    (SPR_X = (x), SPR_Y = (y), CHR_BYTE = (tile), add_sprite_(pal))
+
+#define add_sprite_16x16(x, y, tile, pal) \
+    (SPR_X = (x), SPR_Y = (y), CHR_BYTE = (tile), add_sprite_16x16_(pal))
 
 #define PALETTE_SPR_ADDR 0x3F10
 #define PALETTE_SIZE     16
@@ -152,7 +164,7 @@ void draw_title_screen(void){
 	temp = skip_leading_zeros(hiscore_string, 0);
 	draw_str(&hiscore_string[temp], 0xD + temp, 3, 0x30);
 	
-	if (cursor_pos != 0){// If cursor at RESET wasn't at 1 player position, need to draw 2nd player data. TODO: isColdBoot better?
+	if (cursor_pos != 0){// If cursor at RESET wasn't at 1 player position, need to draw 2nd player data.
 		draw_str(two_string, 0x15, 3, 0);	
 		temp = skip_leading_zeros(hiscore_2p_string, 0);
 		draw_str(&hiscore_2p_string[temp], 0x14 + temp, 3, 0x30);
@@ -176,7 +188,7 @@ GameState title_intro_loop(void) {
         frame_wait();
         pad_poll(0);
        
-        if (PAD_STATE[0] & (PAD_SELECT | PAD_START)) {
+        if (PAD_STATET[0] & (PAD_SELECT | PAD_START)) {
             break;
         }
         ++i;
@@ -185,8 +197,95 @@ GameState title_intro_loop(void) {
 	return STATE_TITLE_MENU;
 }
 
-void show_secret_msg(void){//TODO:перевести на state
-	
+static void make_gray_frame(void) {
+    memfill(SCREEN_BUFFER, TILE_GREY, 1024);
+    memfill(SCREEN_BUFFER + ATTR_OFFSET, 0, 64); // all tiles on pal 0
+    for (i = 0; i < PLAYFIELD_SIZE; ++i) {
+        dst = SCREEN_BUFFER + COORD_TO_NT_OFFSET(FRAME_OFFSET, FRAME_OFFSET + i);
+        memfill(dst, TILE_BLACK, PLAYFIELD_SIZE);
+    }
+}
+
+// Wait ~1 second (64 frames), like Wait_1Second in the ROM
+static void wait_1_second(void) {
+    FRAME_CNT = 0;
+    do {
+        frame_wait();
+    } while (FRAME_CNT & 0x3F);
+}
+
+// Queue a string (no terminator) at tile x,y of nametable A
+#define SECRET_STR(str, x, y) \
+    add_vram_cpy_cmd(NAMETABLE_A + COORD_TO_NT_OFFSET((x), (y)), (str), sizeof(str) - 1)
+
+// Falling green drop (Draw_Drop in the ROM)
+static void draw_drop(void) {
+    static unsigned char drop_x, drop_y, drop_frame, drop_tile, hold;
+
+    drop_x = 0x78;
+    drop_y = 0x1E;
+
+    // 7 animation frames of the respawn "star", 4 video frames each
+    for (drop_frame = 0; drop_frame != 7; ++drop_frame) {
+        // tile = (3 - |3 - frame|) * 4 + 0xA1
+        drop_tile = (drop_frame >= 3) ? (drop_frame - 3) : (3 - drop_frame);
+        drop_tile = ((3 - drop_tile) << 2) + TILE_RESPAWN_BASE;
+        for (hold = 0; hold != 4; ++hold) {
+            frame_wait();
+            add_sprite_16x16(drop_x, drop_y, drop_tile, 3);
+        }
+    }
+
+    // The unused "tear drop" sprite falls until it leaves the screen
+    do {
+        frame_wait();
+        ++drop_y;
+        add_sprite_16x16(drop_x, drop_y, TILE_DROP, 1);
+    } while (drop_y != 0xF8);
+}
+
+void show_secret_msg(void) {
+    static const unsigned char msg_this_program_was[] = "THIS PROGRAM WAS";
+    static const unsigned char msg_written_by[]       = "WRITTEN BY";
+    static const unsigned char msg_open_reach[]       = "OPENkREACH"; // 'k' glyph is the hyphen
+    static const unsigned char msg_who_loves[]        = "WHO LOVES NORIKO";
+    static const unsigned char msg_dot[]              = { TILE_DOT, 0xFF };
+    static unsigned char dot_x;
+
+    ppu_off();
+    scroll(0, 0);                       // show nametable A (title art lives in C)
+    oam_clear();                        // no title tank on this screen
+    memfill(SCREEN_BUFFER, 0, 1024);
+    vram_adr(NAMETABLE_A);
+    vram_write(SCREEN_BUFFER, 1024);
+    set_ppu();
+    ppu_mask(MASK_SHOW_ALL);
+
+    wait_1_second();
+    wait_1_second();
+
+    SECRET_STR(msg_this_program_was, 8, 0x08); wait_1_second();
+    SECRET_STR(msg_written_by,       8, 0x0A); wait_1_second();
+    SECRET_STR(msg_open_reach,       8, 0x0C); wait_1_second();
+    SECRET_STR(msg_who_loves,        8, 0x0E); wait_1_second();
+
+    // Five dots, one per second, then the drop falls
+    for (dot_x = 8; dot_x <= 0x0C; ++dot_x) {
+        SECRET_STR(msg_dot, dot_x, 0x10);
+        if (dot_x != 0x0C) {
+            wait_1_second();
+        }
+    }
+    draw_drop();
+
+    // Leave a fresh gray frame behind, as the ROM does
+    ppu_off();
+    oam_clear();
+    make_gray_frame();
+    vram_adr(NAMETABLE_A);
+    vram_write(SCREEN_BUFFER, 1024);
+    set_ppu();
+    ppu_mask(MASK_SHOW_ALL);
 }
 
 
@@ -195,7 +294,7 @@ void skip_handle(unsigned char id){
 }
 
 void initialize_gameover (void){
-    gameover_str_timer = 0x0D;
+    gameover_str_timer = GAMEOVER_TIMER_INIT;
     gameover_str_y = 0xD8;
     FRAME_CNT = 0;
 }
@@ -346,7 +445,7 @@ void command_move(unsigned char id){
     // Pre-move RNG check: 1/16 chance for aligned enemies to retarget
     if (id >= 2) {
         if ((tank_x[id] & 7) == 0 && (tank_y[id] & 7) == 0) {
-            if ((get_random() & 0x0F) == 0) {
+            if ((get_random() & RANDOM_AIM_MASK) == 0) {
                 get_random_aim(id);
                 return;
             }
@@ -367,7 +466,7 @@ void command_move(unsigned char id){
     temp16 = ((unsigned int)(j >> 3) << 5) + (i >> 3);  
     temp = SCREEN_BUFFER[temp16];
 
-    if (temp < 0x80 && (temp == 0 || temp >= 0x20)) {
+    if (temp < 0x80 && (temp == 0 || temp >= TILE_BRICK_THRESHOLD)) {
         // Corner 2
         i = x + tmp1 - tmp2;
         if (i >= x) i--;
@@ -376,7 +475,7 @@ void command_move(unsigned char id){
         temp16 = ((unsigned int)(j >> 3) << 5) + (i >> 3);
         temp = SCREEN_BUFFER[temp16];
 
-        if (temp < 0x80 && (temp == 0 || temp >= 0x20)) {
+        if (temp < 0x80 && (temp == 0 || temp >= TILE_BRICK_THRESHOLD)) {
             tank_x[id] = x;
             tank_y[id] = y;
             track_pos[id] ^= 4;
@@ -400,14 +499,12 @@ void command_move(unsigned char id){
     }
 
     // 25% chance (get_random() & 3 == 0)
-    if ((tank_x[id] & 7) != 0 || (tank_y[id] & 7) != 0) {
-        // Not on an 8x8 tile boundary: Immediate 180-degree reverse
-        tank_status[id] ^= 2;
-        return;
+    if ((tank_x[id] & 7) == 0 && (tank_y[id] & 7) == 0) {
+        // On a tile boundary: Escalate to Command 9 (Get Random Status/Aim)
+        tank_status[id] = (tank_status[id] & 0x0F) | 0x90;
     }
-    // On a tile boundary: Escalate to Command 9 (Get Random Status/Aim)
-    tank_status[id] = (tank_status[id] & 0x0F) | 0x90;
-    
+    // Not on an 8x8 tile boundary: Immediate 180-degree reverse
+    tank_status[id] ^= 2; 
 }
 
 // Called from handle_tank_status_command() via jump table entry 8 (command nibble $8).
@@ -427,7 +524,7 @@ void command_drift(unsigned char id) {
     }
 
     // Coast counter steps: $x8 → $x4 → $x0, then transition to command_move
-    tank_status[id] -= 4;
+    tank_status[id] -= COAST_COOLDOWN;
     if ((tank_status[id] & 0x0C) != 0) return;
 
     // Bits 3-2 reached zero — restore command A (move), keep direction in low nibble
@@ -480,8 +577,8 @@ unsigned char get_ai_status(unsigned char id) {
 }
 
 void command_aim_hq(unsigned char id) {
-    ai_x_aim = 0x78;
-    ai_y_aim = 0xD8;
+    ai_x_aim = HQ_X;
+    ai_y_aim = HQ_Y;
     tank_status[id] = get_ai_status(id);
 }
 void command_aim_player1(unsigned char id){
@@ -550,7 +647,7 @@ void load_new_tank(unsigned char id){
     tank_status[id] = respawn_status[id];
     //Player
     if (id < 2){
-        invincible_timer[id] = 3;    // spawn shield
+        invincible_timer[id] = INVINCIBLE_TIME;    // spawn shield
         tank_type[id] = player_type[id];
     //Enemy
     } else {
@@ -563,19 +660,19 @@ void load_new_tank(unsigned char id){
         --enemy_count[enemy_type_number];
 
         // Determine stage number for enemy set
-        cnt = (stage_mode != STAGE_MODE_NORMAL) ? 35 : stage_number;
+        cnt = (stage_mode != STAGE_MODE_NORMAL) ? MAX_STAGE : stage_number;
         cnt = ((cnt - 1) << 2) + enemy_type_number;
         temp = enemy_types[cnt];
 
         // Strongest tank ($E0) gets armour level 3
-        if (temp == 0xE0) {
-            temp |= 3;
+        if (temp == TANK_TYPE_HEAVY) {
+            temp |= TANK_TYPE_HEAVY_ARMOR;
         }
         // OR with existing tank_type (may have bonus flag from initialize_tank)
         temp |= tank_type[id];
         // Strongest bonus tank will have low armor - balancing tweak
         if (temp == 0xE7) {
-            temp = 0xE4;
+            temp = TANK_TYPE_HEAVY_BONUS_FIX;
         }
         tank_type[id] = temp;
     }
@@ -648,7 +745,7 @@ void render_kill_points(unsigned char id){
         add_sprite_16x16(tank_x[id], tank_y[id], 0xF1, 3);
     }
     else{
-        current_spr_tile_index = ((tank_type[id] >> 3) & 0xFC) + 0xA9;
+        current_spr_tile_index = ((tank_type[id] >> 3) & 0xFC) + TILE_KILL_PTS_BASE;
         add_sprite_16x16(tank_x[id], tank_y[id], current_spr_tile_index, 3);
     }
     SPR_PRIORITY = 0x20;	
@@ -656,14 +753,14 @@ void render_kill_points(unsigned char id){
 
 void render_small_explode1(unsigned char id){
     SPR_PRIORITY = 0;
-    add_sprite_16x16(tank_x[id], tank_y[id], 0xF9, 3);
+    add_sprite_16x16(tank_x[id], tank_y[id], TILE_RICOCHET_BASE + 8, 3);
     SPR_PRIORITY = 0x20;	
 }
 void render_small_explode2(unsigned char id){
     //i, j - temporary
     i = tank_status[id] >> 4;
     j = (7 - i) << 2;
-    current_spr_tile_index = 0xF1 + j;
+    current_spr_tile_index = TILE_RICOCHET_BASE + j;
     SPR_PRIORITY = 0;
     add_sprite_16x16(tank_x[id], tank_y[id], current_spr_tile_index, 3);	
     SPR_PRIORITY = 0x20;
@@ -671,7 +768,7 @@ void render_small_explode2(unsigned char id){
 
 static void set_sprite_index(unsigned char quadrant, unsigned char tank_idx) {
     //i - base, j - phase
-    i = (quadrant << 2) + 0xD1;
+    i = (quadrant << 2) + TILE_BIG_EXPLODE_BASE;
     j = (tank_status[tank_idx] & 0xF0) - 0x30;
     j ^= 0x10; 
     current_spr_tile_index = i + j;
@@ -703,7 +800,7 @@ void render_respawn(unsigned char id){
     //temp - temporary
     cnt = tank_status[id] & 0x0F;  // 0..13
     temp = (cnt >= 7) ? (cnt - 7) : (7 - cnt);  // |frame - 7|
-    current_spr_tile_index = ((temp << 1) & 0xFC) + 0xA1;
+    current_spr_tile_index = ((temp << 1) & 0xFC) + TILE_RESPAWN_BASE;
     add_sprite_16x16(tank_x[id], tank_y[id], current_spr_tile_index, 3);
 }
 
@@ -784,7 +881,7 @@ static void draw_bullet_sprite() {
     // i - bullet id
     // cnt - direction
     cnt = bullet_status[i] & 3;                    // direction
-    current_spr_tile_index = 0xB1 + (cnt << 1);    // base bullet tile + direction offset
+    current_spr_tile_index = TILE_BULLET_BASE + (cnt << 1);    // base bullet tile + direction offset
     pal = 2;                                       // sprite palette 2
     add_sprite(bullet_x[i] - 5, bullet_y[i], current_spr_tile_index, pal);
 }
@@ -792,7 +889,7 @@ static void draw_ricochet_sprite() {
     // i  - bullet id
     // cnt - frame index
     cnt = (3 - (GET_BULLET_CMD(i) >> 4)) * 4;
-    current_spr_tile_index = 0xF1 + cnt;
+    current_spr_tile_index = TILE_RICOCHET_BASE + cnt;
     add_sprite_16x16(bullet_x[i], bullet_y[i], current_spr_tile_index, 3);
 }
 
@@ -824,11 +921,11 @@ static void render_pause(void) {
     
     // Draw "PAUSE" using 5 individual 8x16 sprites
     // Tiles: P=0x17, A=0x19, U=0x1B, S=0x1D, E=0x1F
-    add_sprite(0x64, 0x80, 0x17, pal); // P
-    add_sprite(0x6C, 0x80, 0x19, pal); // A
-    add_sprite(0x74, 0x80, 0x1B, pal); // U
-    add_sprite(0x7C, 0x80, 0x1D, pal); // S
-    add_sprite(0x84, 0x80, 0x1F, pal); // E
+    add_sprite(0x64, 0x80, TILE_PAUSE_P, pal);
+    add_sprite(0x6C, 0x80, TILE_PAUSE_A, pal);
+    add_sprite(0x74, 0x80, TILE_PAUSE_U, pal);
+    add_sprite(0x7C, 0x80, TILE_PAUSE_S, pal);
+    add_sprite(0x84, 0x80, TILE_PAUSE_E, pal);
     
     SPR_PRIORITY = 0x20;
 }
@@ -847,13 +944,13 @@ static void null_status(void) {
 GameState title_menu_loop(void) {
 
 	//From top screen border to first menu item vertically $88 pixels
-	#define CURSOR_POS_TO_SPR_COORD ((cursor_pos << 4) + 0x8B)
+	#define CURSOR_POS_TO_SPR_COORD ((cursor_pos << 4) + TITLE_MENU_Y_BASE)
     static unsigned char pad_count;
 	
     set_bg_pal_number(3);
     scroll(0, 240);       
     null_status();
-	tank_x[0] = 0x48;//x on title wont change
+	tank_x[0] = TITLE_TANK_X; //x on title wont change
 	tank_y[0] = CURSOR_POS_TO_SPR_COORD;
 	tank_status[0] = TANK_CMD_DRIFT | TANK_DIR_RIGHT;
 	tank_type[0] = TANK_TYPE_0;
@@ -878,13 +975,13 @@ GameState title_menu_loop(void) {
             SECONDS_CNT = 0;
         }
         
-        // Secret code: Player 1 holds SELECT, Player 2 presses RIGHT
-        if ((PAD_STATET[0] & PAD_SELECT) && (PAD_STATET[1] & PAD_RIGHT)) {
+        // Secret code, step 1: Player 1 holds DOWN, Player 2 presses A (8 times -> 0x80)
+        if ((PAD_STATE[0] & PAD_DOWN) && (PAD_STATET[1] & PAD_A)) {
             pad_count += 0x10;
         }
         
-        // Secret code: Player 1 holds START, Player 2 presses LEFT
-        if ((PAD_STATET[0] & PAD_START) && (PAD_STATET[1] & PAD_LEFT)) {
+        // Secret code, step 2: Player 1 holds RIGHT, Player 2 presses B (12 times -> 0x74)
+        if ((PAD_STATE[0] & PAD_RIGHT) && (PAD_STATET[1] & PAD_B)) {
             --pad_count;
         }
         
@@ -905,7 +1002,7 @@ GameState title_menu_loop(void) {
         if (PAD_STATET[0]& PAD_START) {
             // Check for secret message unlock
             if (construction_flag == 7 && pad_count == 0x74) {
-                show_secret_msg();//TODO: перевести на state
+                show_secret_msg();
             }            
 
             set_bg_pal_number(0);            
@@ -943,7 +1040,6 @@ static void draw_converging_shutters(void) {
 
 //Draw stage number on screen
 static void draw_stage_display(void) {
-    #define TILE_GREY_DIGIT_BASE 0x6E
     static const unsigned char stage_text[] = {
 		0x23, 0x24, 0x25, 0x26, 0x27, 0x11, 0x11  // "STAGE__"
 	};
@@ -964,8 +1060,6 @@ static void draw_stage_display(void) {
             NAMETABLE_A + COORD_TO_NT_OFFSET(0xC + 7, 0xE),
             &number_string[6], 1, TILE_GREY_DIGIT_BASE);
     }
-
-    #undef TILE_DIGIT_BASE
 }
 
 // Handle stage number changes
@@ -1093,7 +1187,7 @@ static void draw_diverging_shutters(void) {
 
 
 static void load_reinforcements_icons(void){
-    static const unsigned char reinforcement_line[] = {0x6A, 0x6A};
+    static const unsigned char reinforcement_line[] = {TILE_REINFORCE_ICON, TILE_REINFORCE_ICON};
     for (i = 0; i <= 18; i += 2) {
         add_vram_cpy_cmd(
             NAMETABLE_A + COORD_TO_NT_OFFSET((i & 1) + 29, (i >> 1) + 3),
@@ -1102,8 +1196,8 @@ static void load_reinforcements_icons(void){
 }
 
 static void load_Ip_icons(void){
-    static const unsigned char Ip_line[] = {0x58, 0x13};
-    static const unsigned char IIp_line[] = {0x5A, 0x13};
+    static const unsigned char Ip_line[] = {TILE_IP_ICON, TILE_IP_SUFFIX};
+    static const unsigned char IIp_line[] = {TILE_IIP_ICON, TILE_IP_SUFFIX};
     add_vram_cpy_cmd(NAMETABLE_A + COORD_TO_NT_OFFSET(0x1D, 0x11), Ip_line, sizeof(Ip_line));
     if (stage_mode == 2 || cursor_pos > 0){
         add_vram_cpy_cmd(NAMETABLE_A + COORD_TO_NT_OFFSET(0x1D, 0x14), IIp_line, sizeof(Ip_line));
@@ -1149,13 +1243,13 @@ static void set_enemy_count(){
         0x04, 0x0A, 0x00, 0x06,
         0x04, 0x06, 0x00, 0x0A
     };
-    temp = stage_mode == STAGE_MODE_NORMAL ? stage_number : 35;
+    temp = stage_mode == STAGE_MODE_NORMAL ? stage_number : MAX_STAGE;
     --temp;
     temp <<= 2;
     memcpy(enemy_count, &enemy_amounts[temp], sizeof(enemy_count));
 }
 
-
+static unsigned char hq_armor_blink_state = 0xFF;  // sentinel: forces first redraw
 static void reset_stage_vars(){
     for(i = 0; i < sizeof(bullet_status); ++i){//hide bullets
         bullet_status[i] = 0;
@@ -1167,7 +1261,7 @@ static void reset_stage_vars(){
         player_ice_status[i] = 0;
     }
     gameover_str_timer = 0;
-    gameover_str_y = 0xF0;
+    gameover_str_y = SPRITE_OFFSCREEN_Y;
 
     if (player_lives[0] != 0){
         initialize_tank(0);
@@ -1176,13 +1270,14 @@ static void reset_stage_vars(){
         initialize_tank(1);
     }
 
-    enemy_reinforce_count = 20;
-    enemy_counter = 20;
+    enemy_reinforce_count = MAX_ENEMIES;
+    enemy_counter = MAX_ENEMIES;
 
     enemy_type_number = 0;
     SECONDS_CNT = 0;
     construction_flag = 0;
     hq_armor_timer = 0;
+    hq_armor_blink_state = 0xFF;
     player_blink_timer[0] = 0;
     player_blink_timer[1] = 0;
     invincible_timer[0] = 0;
@@ -1198,7 +1293,7 @@ static void reset_stage_vars(){
         killcount_1p[i] = 0;
         killcount_2p[i] = 0;
     }
-    temp = stage_mode == 1 ? 35 : stage_number;
+    temp = stage_mode == 1 ? MAX_STAGE : stage_number;
     cnt = cursor_pos > 0? 20 : 0;
     respawn_delay = 190 - (temp << 2) - cnt;
     frame_wait(); 
@@ -1230,7 +1325,7 @@ static void handle_input(){
     for (cnt = 0; cnt < 2; ++cnt) {
 
         // skip exploding or spawning tanks
-        if (tank_status[cnt] < 0x80 || tank_status[cnt] >= 0xE0)
+        if (tank_status[cnt] < TANK_STATUS_ALIVE_MIN || tank_status[cnt] >= TANK_STATUS_ALIVE_MAX)
             continue;
 
         // blink timer (friendly fire grace period) — tick it down, suppress input
@@ -1260,7 +1355,7 @@ static void handle_input(){
         // ice: if on ice and slide timer expired, restart it
         if (player_ice_status[cnt] & 0x80) {
             if ((player_ice_status[cnt] & 0x1F) == 0) {
-                player_ice_status[cnt] = 0x80 | 0x1C;  // 28 frames of sliding
+                player_ice_status[cnt] = ICE_SLIDE_INIT;  // 28 frames of sliding
                 sound_play(SND_ICE);
             }
         }
@@ -1298,69 +1393,58 @@ static void handle_all_tanks_commands(){
         handle_tank_status_command(id);
     }
 }
-
+static unsigned char prev_tank_x[8], prev_tank_y[8];
 //Set occupied flag to nametable tile under each tank for collision detection
 //Note: this function looks strange, because it is optimized in C for shorter assembly output and speed
 static void mark_tiles_under_tanks(void) {
-    //cnt - tank id
-    //temp16 - screen buffer base
-    //x, y - coordinates of probe start
-    //i, j - temporary, like hi and low bytes of offset 
-
     for (cnt = 7; cnt != 0xFF; --cnt) {
-        // skip exploding or spawning
-        if (tank_status[cnt] < 0x80 || tank_status[cnt] >= 0xE0)
+        if (tank_status[cnt] < TANK_STATUS_ALIVE_MIN || tank_status[cnt] >= TANK_STATUS_ALIVE_MAX)
             continue;
-        //Optimized calculation of pointer to screen buffer based on coordinates
-        //temp16 = 0x400 +((tank_y[cnt] - 8) / 8) * 32+ ((tank_x[cnt] - 8) / 8);   
-        x = ((unsigned char)(tank_x[cnt] - 8)) / 8;//coordinates in tiles
-        y = ((unsigned char)(tank_y[cnt] - 8)) / 8;
-        j = (y & 0x07) * 0x20;//y * screen width tiles will give upper 3 bits of low byte
-        i = (y >> 3) | 4; //hight byte of result offset starting from 0x400 
-        temp16 = ((i << 8) | (j | x));
 
-        nt_addr_lo[cnt] = (unsigned char)temp16;
-        nt_addr_hi[cnt] = (unsigned char)(temp16 >> 8) & 3;
+        if (tank_x[cnt] != prev_tank_x[cnt] || tank_y[cnt] != prev_tank_y[cnt]) {
+            // Moved since last frame (or first frame active) - recompute everything
+            x = ((unsigned char)(tank_x[cnt] - 8)) / 8;
+            y = ((unsigned char)(tank_y[cnt] - 8)) / 8;
+            j = (y & 0x07) * 0x20;
+            i = (y >> 3) | 4;
+            temp16 = ((i << 8) | (j | x));
 
-        // ice detection for players only. Set or clear ice sliding flag
-        if (cnt < 2) {
-            i = (((MetaTileEntry*)temp16)->right_bottom) & 0x7F;
-            j = player_ice_status[cnt];
-            if (i == TILE_ICE){
-                j |= 0x80;
+            nt_addr_lo[cnt] = (unsigned char)temp16;
+            nt_addr_hi[cnt] = (unsigned char)(temp16 >> 8) & 3;   // wipes stale flag bits too
+
+            if (cnt < 2) {
+                i = (((MetaTileEntry*)temp16)->right_bottom) & 0x7F;
+                j = player_ice_status[cnt];
+                if (i == TILE_ICE) j |= OCCUPIED_BIT; else j &= ~OCCUPIED_BIT;
                 player_ice_status[cnt] = j;
-            }                
-            else{
-                j &= 0x7F;
-                player_ice_status[cnt] = j;
-            } 
+            }
+
+            if ((tank_x[cnt] & 7) == 0) nt_addr_hi[cnt] |= 0x80;  // left-neighbour flag
+            if ((tank_y[cnt] & 7) == 0) nt_addr_hi[cnt] |= 0x40;  // top-neighbour flag
+
+            prev_tank_x[cnt] = tank_x[cnt];
+            prev_tank_y[cnt] = tank_y[cnt];
+        } else {
+            temp16 = (((unsigned int)(nt_addr_hi[cnt] & 3) | 4) << 8) | nt_addr_lo[cnt];
         }
-        // always mark primary tile (bottom-right of sprite = base + $21)
+
+        // This part always runs - the tile must be (re-)flagged every frame
         i = ((MetaTileEntry*)temp16)->right_bottom;
-        i |= 0x80;        
+        i |= OCCUPIED_BIT;
         ((MetaTileEntry*)temp16)->right_bottom = i;
 
-        // tile-aligned on X: also mark left neighbour ($20)
-        if ((tank_x[cnt] & 7) == 0) {
-            i = nt_addr_hi[cnt];
-            i |= 0x80;
-            nt_addr_hi[cnt] = i;
+        if (nt_addr_hi[cnt] & 0x80) {
             i = ((MetaTileEntry*)temp16)->left_bottom;
-            i |= 0x80;        
+            i |= OCCUPIED_BIT;
             ((MetaTileEntry*)temp16)->left_bottom = i;
         }
-        // tile-aligned on Y: also mark top neighbour ($01)
-        if ((tank_y[cnt] & 7) == 0) {
-            i = nt_addr_hi[cnt];
-            i |= 0x40;
-            nt_addr_hi[cnt] = i;
+        if (nt_addr_hi[cnt] & 0x40) {
             i = ((MetaTileEntry*)temp16)->right_top;
-            i |= 0x80;        
-            ((MetaTileEntry*)temp16)->right_top = i;           
+            i |= OCCUPIED_BIT;
+            ((MetaTileEntry*)temp16)->right_top = i;
         }
     }
 }
-
 //Clear occupied flag of nametable tile under each tank
 static void clear_tiles_under_tanks(void) {
     //cnt - tank id
@@ -1372,7 +1456,7 @@ static void clear_tiles_under_tanks(void) {
     } u;
 
     for (cnt = 7; cnt != 0xFF; --cnt) {
-        if (tank_status[cnt] < 0x80 || tank_status[cnt] >= 0xE0) continue;
+        if (tank_status[cnt] < TANK_STATUS_ALIVE_MIN || tank_status[cnt] >= TANK_STATUS_ALIVE_MAX) continue;
         
         temp = nt_addr_hi[cnt];
         
@@ -1381,16 +1465,16 @@ static void clear_tiles_under_tanks(void) {
         u.b[1] = (temp & 0x03) | 0x04;
 
         // Clear primary tile
-        u.p[0x21] &= 0x7F;
+        u.p[0x21] &= ~OCCUPIED_BIT;
 
         // Clear left neighbour
         if (temp & 0x80) {
-            u.p[0x20] &= 0x7F;
+            u.p[0x20] &= ~OCCUPIED_BIT;
         }
         
         // Clear top neighbour
         if (temp & 0x40) {
-            u.p[0x01] &= 0x7F;
+            u.p[0x01] &= ~OCCUPIED_BIT;
         }
     }
 }
@@ -1441,7 +1525,7 @@ void handle_invincibility(void) {
             --invincible_timer[i];
 
         // draw aura: tile $29/$2B alternating every 2 frames
-        current_spr_tile_index = ((FRAME_CNT & 2) << 1) + 0x29;
+        current_spr_tile_index = ((FRAME_CNT & 2) << 1) + TILE_INVINC_BASE;
         add_sprite_16x16(tank_x[i], tank_y[i], current_spr_tile_index, 2);
     }
 }
@@ -1469,18 +1553,28 @@ static void make_shot() {
     bullet_property[i] = 0;
 
     // Set speed / armor based on tank type (upper 4 bits)
-    temp = tank_type[i] & 0xF0;
+    temp = tank_type[i] & TANK_TYPE_MASK;
     
     // Types 0, 4, 5, 7 ($00, $80, $A0, $E0) all fire normal bullets.
-    // We merge the 0x00 check and the 0x80 bit check here.
-    if (temp == 0x00 || (temp & 0x80)) {
+    if (temp == 0x00 ) {
         return; 
+    }
+
+    // bonus/fast enemy — must be before the $80 test
+    if (temp == 0xC0) {               
+        bullet_property[i] = 0x01;
+        return;
     }
     
     // Type 3 ($60) fires fast, armor-piercing bullets (property 3)
     if (temp == 0x60) {
         bullet_property[i] = 0x03;
         return;
+    }
+
+    // $80, $90, $A0, $B0, $D0, $E0, $F0 -> property 0
+    if (temp & 0x80) {
+        return;                       
     }
     
     // Types 1, 2, 6 ($20, $40, $C0) fire fast bullets (property 1)
@@ -1491,7 +1585,7 @@ static void make_shot() {
 static void make_player_shot(void) {
     //i - player id
     for (i = 1; i != 0xFF; --i) {
-        if (tank_status[i] < 0x80 || tank_status[i] >= 0xE0) 
+        if (tank_status[i] < TANK_STATUS_ALIVE_MIN || tank_status[i] >= TANK_STATUS_ALIVE_MAX) 
             continue;
         if (!(PAD_STATET[i] & (PAD_A | PAD_B))) continue;
 
@@ -1517,10 +1611,10 @@ static void make_enemy_shot(void) {
     // Iterate through enemy tank slots (7 down to 2)
     for (i = 7; i >= 2; --i) {
         // Skip if tank is exploding (< 0x80) or spawning (>= 0xE0)
-        if (tank_status[i] < 0x80 || tank_status[i] >= 0xE0)
+        if (tank_status[i] < TANK_STATUS_ALIVE_MIN || tank_status[i] >= TANK_STATUS_ALIVE_MAX)
             continue;        
         // 1/32 chance to fire a bullet each frame
-        if ((get_random() & 0x1F) != 0)
+        if ((get_random() & ENEMY_FIRE_MASK) != 0)
             continue;        
         make_shot();
     }
@@ -1623,15 +1717,15 @@ static void draw_destroyed_hq() {
 
 // Draw a 16×16 explosion sprite centred on the HQ eagle position.
 static void draw_hq_small_explode(unsigned char tile) {
-    add_sprite_16x16(0x78, 0xD8, tile, 3);   // HQ eagle screen centre
+    add_sprite_16x16(HQ_X, HQ_Y, tile, 3);   // HQ eagle screen centre
 }
 
 // Draw a 32×32 explosion sprite (four 16×16 quadrants) over the HQ.
 static void draw_hq_big_explode(unsigned char spr_base) {
-    add_sprite_16x16(0x70, 0xD0, 0xD1 + spr_base, 3); // top-left
-    add_sprite_16x16(0x80, 0xD0, 0xD5 + spr_base, 3); // top-right
-    add_sprite_16x16(0x70, 0xE0, 0xD9 + spr_base, 3); // bottom-left
-    add_sprite_16x16(0x80, 0xE0, 0xDD + spr_base, 3); // bottom-right
+    add_sprite_16x16(HQ_X - 8, HQ_Y - 8, TILE_BIG_EXPLODE_BASE + spr_base, 3); // top-left
+    add_sprite_16x16(HQ_X + 8, HQ_Y - 8, TILE_BIG_EXPLODE_BASE + 4 + spr_base, 3); // top-right
+    add_sprite_16x16(HQ_X - 8, HQ_Y + 8, TILE_BIG_EXPLODE_BASE + 8 + spr_base, 3); // bottom-left
+    add_sprite_16x16(HQ_X + 8, HQ_Y + 8, TILE_BIG_EXPLODE_BASE + 12 + spr_base, 3); // bottom-right
 }
 
 // Armour timer (hq_armor_timer):
@@ -1642,6 +1736,8 @@ static void draw_hq_big_explode(unsigned char spr_base) {
 //   toggling between armoured and normal appearance every 16 frames.
 //   When timer reaches 0 the normal HQ tiles are restored once.
 static void handle_hq_armor(void) {
+    static unsigned char blink_state;
+
     if (hq_armor_timer == 0)       return;
     // Decrement once per second
     if ((FRAME_CNT & 63) == 0) {
@@ -1653,10 +1749,12 @@ static void handle_hq_armor(void) {
     }
     // Blink during the last 3 seconds (timer 1–3): toggle every 16 frames
     if (hq_armor_timer < 4) {
-        if (FRAME_CNT & 0x10)
-            draw_armoured_hq();
-        else
-            draw_normal_hq();
+        blink_state = (FRAME_CNT & 0x10) != 0;
+        if (blink_state != hq_armor_blink_state) {
+            hq_armor_blink_state = blink_state;
+            if (blink_state) draw_armoured_hq();
+            else draw_normal_hq();
+        }
     }
     // timer >= 4: armoured tiles already correct in VRAM, nothing to redraw
 }
@@ -1678,9 +1776,9 @@ static void handle_hq_explode(void) {
 
     switch (temp) {
         case 0:                           return;  // animation finished
-        case 1: draw_hq_small_explode(0xF1); break;
-        case 2: draw_hq_small_explode(0xF5); break;
-        case 3: draw_hq_small_explode(0xF9); break;
+        case 1: draw_hq_small_explode(TILE_RICOCHET_BASE); break;
+        case 2: draw_hq_small_explode(TILE_RICOCHET_BASE + 4); break;
+        case 3: draw_hq_small_explode(TILE_RICOCHET_BASE + 8); break;
         case 4: draw_hq_big_explode(0x00);   break;
         case 5: draw_hq_big_explode(0x10);   break;
         default:                          return;
@@ -1689,7 +1787,7 @@ static void handle_hq_explode(void) {
 
 //Checks if bullet collides with tiles and starts ricochet/explosions if do
 //i - bullet id, x, y are inited with probe coordinates before calling this function
-static unsigned char bullet_bg_impact() {
+static unsigned char bullet_bg_impact(unsigned char *ricochet_played) {
     //i - bullet id
     //x - sprite x
     //y - sprite y
@@ -1722,7 +1820,7 @@ static unsigned char bullet_bg_impact() {
         return 0;                     // quadrant already empty → pass through
 
     // 4 HQ eagle tiles (C8‑CB) – explode and ricochet
-    if ((temp & 0xFC) == 0xC8) {
+    if ((temp & TILE_HQ_MASK) == TILE_HQ_BASE) {
         if (hq_status != 0) {
             hq_status = 0x27;       // initial explosion frame
             sound_play(SND_HQ_EXPLODE);
@@ -1734,7 +1832,7 @@ static unsigned char bullet_bg_impact() {
     }
 
     // Water, forest, ice (tile >= $12) – pass through
-    if (temp >= 0x12)
+    if (temp >= TILE_WATER_THRESHOLD)
         return 0;
 
     // Solid obstacle – always set ricochet animation
@@ -1742,8 +1840,9 @@ static unsigned char bullet_bg_impact() {
 
     // Screen border ($11) – no tile destruction
     if (temp == TILE_GREY) {
-        if (i < 2) {
+        if (i < 2 && !*ricochet_played) {
             sound_play(SND_ARMOUR_RICOCHET_WALL);
+            *ricochet_played = 1;
         }
         return 0;
     }
@@ -1751,38 +1850,43 @@ static unsigned char bullet_bg_impact() {
     // Armour‑piercing bullet (property bit 1) – destroys the whole tile, even for bricks
     if (bullet_property[i] & 0x02) {
         buffer_and_vram_fill(temp16, 0, 1);
-        if (i < 2) {
+        if (i < 2 && !*ricochet_played) {
             sound_play(SND_BRICK_RICOCHET);
+            *ricochet_played = 1;
         }
         return 0;
     }
     // armour ($10) without armor-piercing, no destruction
     if (temp == TILE_ARMOR) {
-        if (i < 2) {
+        if (i < 2 && !*ricochet_played) {
             sound_play(SND_ARMOUR_RICOCHET_WALL);
+            *ricochet_played = 1;
         }
         return 0;
     }
     // Normal bullet hitting ordinary brick – create a hole in the correct quadrant
     temp &= ~cnt;
     buffer_and_vram_fill(temp16, temp, 1);
-    if (i < 2) {
+    if (i < 2 && !*ricochet_played) {
         sound_play(SND_BRICK_RICOCHET);
+        *ricochet_played = 1;
     }
     return 1;
 }
+
+
 static void handle_bullet_bg_collisions(void) {
     //i - bullet id
     //k - direction
     //x - probe x
     //y - probe y
-    unsigned char temp_x, temp_y;
-    unsigned char temp_x_quad, temp_y_quad;
-    signed char   inc;
+    static unsigned char temp_x, temp_y;
+    static unsigned char temp_x_quad, temp_y_quad;
+    unsigned char ricochet_played;
 
     for (i = 9; i != 0xFF; --i) {
 
-        if ((bullet_status[i] & 0xF0) != 0x40)
+        if ((bullet_status[i] & 0xF0) != BULLET_CMD_FLY)
             continue;
 
         if (bullet_property[i] == 0) {     // slow bullet: skip every other frame
@@ -1790,35 +1894,33 @@ static void handle_bullet_bg_collisions(void) {
                 continue;
         }
 
+        ricochet_played = 0;
+
         k = bullet_status[i] & 0x03;
 
-        // abs(Bullet_Coord_X_Increment_2[dir]), then ×4
-        inc = dx[k];
-        temp_x = (inc < 0) ? (unsigned char)-inc : (unsigned char)inc;
-        temp_x_quad = temp_x << 2;
-
-        // abs(Bullet_Coord_Y_Increment_2[dir]), then ×4
-        inc = dy[k];
-        temp_y = (inc < 0) ? (unsigned char)-inc : (unsigned char)inc;
-        temp_y_quad = temp_y << 2;
+        // Direct table lookup - no sign test, no negation, no shift
+        temp_x      = abs_dx[k];
+        temp_x_quad = abs_dx_quad[k];
+        temp_y      = abs_dy[k];
+        temp_y_quad = abs_dy_quad[k];
 
         // Probe 1: leading edge
         x = bullet_x[i];
         y = bullet_y[i];
-        if (bullet_bg_impact()) {
+        if (bullet_bg_impact(&ricochet_played)) {
             // Probe 1b: same tile, opposite quadrant (ptr unchanged, new mask)
             x += temp_y_quad;
             y += temp_x_quad;
-            bullet_bg_impact();
+            bullet_bg_impact(&ricochet_played);
         }
         // Probe 2: trailing edge (offset by 1 pixel perpendicular)
         x = bullet_x[i] - temp_y;
         y = bullet_y[i] - temp_x;
-        if (bullet_bg_impact()) {
+        if (bullet_bg_impact(&ricochet_played)) {
             // Probe 2b: same tile, opposite quadrant (ptr unchanged, new mask)
-            x -=  temp_y_quad;
-            y -=  temp_x_quad;
-            bullet_bg_impact();
+            x -= temp_y_quad;
+            y -= temp_x_quad;
+            bullet_bg_impact(&ricochet_played);
         }
     }
 }
@@ -1901,7 +2003,7 @@ static void render_bonus(void) {
             return;
         }
         // Draw 500 points sprite
-        current_spr_tile_index = 0x3B; // Tile index for '500'
+        current_spr_tile_index = TILE_500_PTS; // Tile index for '500'
         pal = 2;
         SPR_PRIORITY = 0; // In front of background
         add_sprite_16x16(bonus_x, bonus_y, current_spr_tile_index, pal);
@@ -1911,7 +2013,7 @@ static void render_bonus(void) {
         if ((FRAME_CNT & 8) == 0) return; // Blink effect: hide sprite every 8 frames
         
         // 4 tiles per bonus icon, base offset 0x81
-        current_spr_tile_index = (bonus_number << 2) + 0x81; 
+        current_spr_tile_index = (bonus_number << 2) + TILE_BONUS_BASE; 
         pal = 2;
         SPR_PRIORITY = 0;
         add_sprite_16x16(bonus_x, bonus_y, current_spr_tile_index, pal);
@@ -1924,13 +2026,13 @@ static void bonus_helmet() {
 }
 
 static void bonus_watch() {
-    enemy_freeze_timer = 10;
+    enemy_freeze_timer = ENEMY_FREEZE_TIME;
 }
 
 static void bonus_shovel() {
     if (hq_status & 0x80) {  // HQ still standing (bit 7 set = intact)
         draw_armoured_hq();
-        hq_armor_timer = 20;
+        hq_armor_timer = HQ_ARMOR_TIME;
     }
 }
 
@@ -1945,7 +2047,7 @@ static void bonus_grenade() {
     sound_play(SND_ENEMY_EXPLODE);
     for (cnt = 7; cnt >= 2; --cnt) {
         if (tank_status[cnt] >= 0x80 && tank_status[cnt] < 0xE0) {
-            tank_status[cnt] = 0x73;
+            tank_status[cnt] = TANK_STATUS_EXPLODE_INIT;
             tank_type[cnt] = 0;
         }
     }
@@ -1993,12 +2095,12 @@ void handle_bonus_collision(void) {
         if (OUT_OF_RANGE_12(tank_y[i], bonus_y)) continue;
 
         // Collision confirmed
-        bonus_timer = 0x32;  // show score for 50 frames
+        bonus_timer = BONUS_SCORE_FRAMES;  // show score for 50 frames
 
         if (bonus_number & 0x80) return;  // bit 7 = newly spawned, not yet active
 
         if (stage_mode != STAGE_MODE_DEMO) {
-            num_to_num_string(0x50);           // 500 points
+            num_to_num_string(SCORE_BONUS);
             add_score(i);
             add_life();
             sound_play(SND_BONUS_TAKEN);
@@ -2047,7 +2149,7 @@ static void handle_bullet_tank_collisions(void) {
     // cnt - tank type index
     // k - temporary storage for i
     // temp - current status
-    static const unsigned char EnemyKillScore[] = { 0x10, 0x20, 0x30, 0x40 };
+    static const unsigned char EnemyKillScore[] = { SCORE_TYPE0, SCORE_TYPE1, SCORE_TYPE2, SCORE_TYPE3 };
     //Function is heavily used in gameplay loop, it needs optimization variables:
     static unsigned char current_x, current_y, idx;
 
@@ -2055,14 +2157,14 @@ static void handle_bullet_tank_collisions(void) {
     // t = 1 (player 2), then 0 (player 1)
     for (i = 1; i != 0xFF; --i) {
         temp = tank_status[i];
-        if (temp < 0x80 || temp >= 0xE0)
+        if (temp < TANK_STATUS_ALIVE_MIN || temp >= TANK_STATUS_ALIVE_MAX)
             continue;                     // tank not active
         current_x = tank_x[i];
         current_y = tank_y[i];
         // Enemy bullets are IDs 2..7
         for (j = 7; j >= 2; --j) {
-            if ((bullet_status[j] & 0xF0) != 0x40)
-                continue;                 // not flying
+            if ((bullet_status[j] & 0xF0) != BULLET_CMD_FLY)
+                continue;                 
 
             // Collision if both axes differ by less than 10 pixels
             if (OUT_OF_RANGE_10(bullet_x[j], current_x)) continue;
@@ -2078,7 +2180,7 @@ static void handle_bullet_tank_collisions(void) {
             }
 
             // Player destroyed
-            tank_status[i] = 0x73;        // explosion command
+            tank_status[i] = TANK_STATUS_EXPLODE_INIT;
             sound_play(SND_PLAYER_EXPLODE);
             player_type[i] = 0;           // reset to basic tank
             tank_type[i] = 0;
@@ -2091,14 +2193,14 @@ static void handle_bullet_tank_collisions(void) {
     // Enemies are IDs 7 down to 2
     for (i = 7; i >= 2; --i) {
         temp = tank_status[i];
-        if (temp < 0x80 || temp >= 0xE0)
+        if (temp < TANK_STATUS_ALIVE_MIN || temp >= TANK_STATUS_ALIVE_MAX)
             continue;
         current_x = tank_x[i];
         current_y = tank_y[i];
         // Player bullets: IDs 0,1,8,9. Original checks (b & 6) == 0.
         for (idx = 0; idx < 4; ++idx) {
             j = PlayerBulletIds[idx];
-            if ((bullet_status[j] & 0xF0) != 0x40) continue;
+            if ((bullet_status[j] & 0xF0) != BULLET_CMD_FLY) continue;
 
             if (OUT_OF_RANGE_10(bullet_x[j], current_x)) continue;
             if (OUT_OF_RANGE_10(bullet_y[j], current_y)) continue;
@@ -2115,14 +2217,16 @@ static void handle_bullet_tank_collisions(void) {
             }
 
             // Tank has armour? Reduce it, tank survives
-            if ((tank_type[i] & 3) != 0) {
-                --tank_type[i];//TODO: optimize surprizingly large code
+            k = tank_type[i];
+            if ((k & 3) != 0) {
+                --k;
+                tank_type[i] = k;
                 sound_play(SND_ARMOUR_RICOCHET_TANK);
                 continue;
             }
 
             // No armour → destroy enemy
-            tank_status[i] = 0x73;
+            tank_status[i] = TANK_STATUS_EXPLODE_INIT;
             sound_play(SND_ENEMY_EXPLODE);
 
             if (stage_mode != STAGE_MODE_DEMO) {
@@ -2144,7 +2248,7 @@ static void handle_bullet_tank_collisions(void) {
     // ---------- Phase 3: Friendly fire (players vs players) ----------
     for (i = 1; i != 0xFF; --i) {
         temp = tank_status[i];
-        if (temp < 0x80 || temp >= 0xE0)
+        if (temp < TANK_STATUS_ALIVE_MIN || temp >= TANK_STATUS_ALIVE_MAX)
             continue;
         current_x = tank_x[i];
         current_y = tank_y[i];
@@ -2152,7 +2256,7 @@ static void handle_bullet_tank_collisions(void) {
         for (idx = 0; idx < 4; ++idx) {
             j = PlayerBulletIds[idx];         // only player bullet IDs
             if (((i ^ j) & 1) == 0) continue;    // skip own bullet
-            if ((bullet_status[j] & 0xF0) != 0x40) continue;
+            if ((bullet_status[j] & 0xF0) != BULLET_CMD_FLY) continue;
 
             if (OUT_OF_RANGE_10(bullet_x[j], current_x)) continue;
             if (OUT_OF_RANGE_10(bullet_y[j], current_y)) continue;
@@ -2170,7 +2274,7 @@ static void handle_bullet_tank_collisions(void) {
             if (player_blink_timer[i] != 0 || stage_mode == STAGE_MODE_DEMO)
                 continue;
             // Set new grace period
-            player_blink_timer[i] = 0xC8;
+            player_blink_timer[i] = BLINK_TIMER_INIT;
         }
     }
 }
@@ -2181,11 +2285,11 @@ static void handle_bullet_bullet_collisions(void) {
     //temp - bullet index
     for (temp = 0; temp < 4; ++temp) {
         i = PlayerBulletIds[temp]; //only player bullets
-        if ((bullet_status[i] & 0xF0) != 0x40) continue;   // A not flying
+        if ((bullet_status[i] & 0xF0) != BULLET_CMD_FLY) continue;   // A not flying
 
         for (j = 9; j != 0xFF; --j) {
             if ((j & 7) == (i & 7)) continue;               // self (aliased 0/8, 1/9)
-            if ((bullet_status[j] & 0xF0) != 0x40) continue; // B not flying
+            if ((bullet_status[j] & 0xF0) != BULLET_CMD_FLY) continue; // B not flying
 
             if (OUT_OF_RANGE_6(bullet_x[j], bullet_x[i])) continue;
             if (OUT_OF_RANGE_6(bullet_y[j], bullet_y[i])) continue;
@@ -2207,7 +2311,7 @@ static void gameover_str_handle(void) {
     if ((FRAME_CNT & 0x0F) == 0) {
         --gameover_str_timer;
         if (gameover_str_timer == 0) {
-            gameover_str_y = 0xF0;//if finished, hide gamover string
+            gameover_str_y = SPRITE_OFFSCREEN_Y;//if finished, hide gamover string
         }
     }
     if (gameover_str_timer >= 10){//scroll until its 10 cycles left
@@ -2215,8 +2319,8 @@ static void gameover_str_handle(void) {
         gameover_str_y += dy[gameover_scroll_dir];
     }
     SPR_PRIORITY = 0;
-    add_sprite_16x16(gameover_str_x, gameover_str_y, 0x79, 3);// left half of "GAME OVER"
-    add_sprite_16x16(gameover_str_x + 16, gameover_str_y, 0x7D, 3);// right half
+    add_sprite_16x16(gameover_str_x, gameover_str_y, TILE_GAMEOVER_L, 3);
+    add_sprite_16x16(gameover_str_x + 16, gameover_str_y, TILE_GAMEOVER_R, 3);
     SPR_PRIORITY = 0x20;
 }
 
@@ -2264,7 +2368,7 @@ static void draw_pts_screen_template(void)
     static const unsigned char pts_label[] = "PTS";
     static const unsigned char total_label[] = "TOTAL";
     static const unsigned char line_label[] = {
-        0x5C, 0x5C, 0x5C, 0x5C, 0x5C, 0x5C, 0x5C, 0x5C   /* aLine */
+        TILE_PTS_LINE, TILE_PTS_LINE, TILE_PTS_LINE, TILE_PTS_LINE, TILE_PTS_LINE, TILE_PTS_LINE, TILE_PTS_LINE, TILE_PTS_LINE  
     };
 
     frame_wait();
@@ -2277,12 +2381,12 @@ static void draw_pts_screen_template(void)
     memfill(SCREEN_BUFFER, 0, 1024);
 
     /* Fill_Attrib_Table */
-    memfill(SCREEN_BUFFER + 0x3C0, 0x50, 4);
-    memfill(SCREEN_BUFFER + 0x3C4, 0xA0, 4);
-    memfill(SCREEN_BUFFER + 0x3C8, 0x50, 3);
-    memfill(SCREEN_BUFFER + 0x3CD, 0x50, 3);
-    memfill(SCREEN_BUFFER + 0x3D0, 0x0A, 3);
-    memfill(SCREEN_BUFFER + 0x3D5, 0x0A, 3);
+    memfill(SCREEN_BUFFER + ATTR_OFFSET, 0x50, 4);
+    memfill(SCREEN_BUFFER + ATTR_OFFSET + 4, 0xA0, 4);
+    memfill(SCREEN_BUFFER + ATTR_OFFSET + 8, 0x50, 3);
+    memfill(SCREEN_BUFFER + ATTR_OFFSET + 0xD, 0x50, 3);
+    memfill(SCREEN_BUFFER + ATTR_OFFSET + 0x10, 0x0A, 3);
+    memfill(SCREEN_BUFFER + ATTR_OFFSET + 0x15, 0x0A, 3);
 
     SCREEN_BUFFER[0x3F0] = 0x05;
     SCREEN_BUFFER[0x3F1] = 0x05;
@@ -2311,7 +2415,7 @@ static void draw_pts_screen_template(void)
         ++cnt;
     }
 
-    add_vram_cpy_based_cmd(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x11 + k, 3), &hiscore_string[k], cnt, 0x30);
+    add_vram_cpy_based_cmd(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x11 + k, 3), &hiscore_string[k], cnt, TILE_DIGIT_BASE);
 
     /*
         Draw:
@@ -2329,7 +2433,7 @@ static void draw_pts_screen_template(void)
         ++cnt;
     }
 
-    add_vram_cpy_based_cmd(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x0D + k, 5), &number_string[k], cnt, 0x30);
+    add_vram_cpy_based_cmd(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x0D + k, 5), &number_string[k], cnt, TILE_DIGIT_BASE);
 
     frame_wait();
     ppu_mask(MASK_SHOW_ALL);
@@ -2351,28 +2455,28 @@ static void draw_pts_screen_template(void)
         NAMETABLE_C+ COORD_TO_NT_OFFSET(4 + k, 9),
         &hiscore_1p_string[k],
         cnt,
-        0x30
+        TILE_DIGIT_BASE
     );
 
     /* Arrow_Left x4 */
     add_vram_fill_cmd(
         (unsigned char *)(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x0E, 0x0C)),
-        0x5B,
+        TILE_PTS_ARROW_LEFT,
         1
     );
     add_vram_fill_cmd(
         (unsigned char *)(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x0E, 0x0F)),
-        0x5B,
+        TILE_PTS_ARROW_LEFT,
         1
     );
     add_vram_fill_cmd(
         (unsigned char *)(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x0E, 0x12)),
-        0x5B,
+        TILE_PTS_ARROW_LEFT,
         1
     );
     add_vram_fill_cmd(
         (unsigned char *)(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x0E, 0x15)),
-        0x5B,
+        TILE_PTS_ARROW_LEFT,
         1
     );
     //Draw second player, if it was 2p game
@@ -2400,28 +2504,28 @@ static void draw_pts_screen_template(void)
             NAMETABLE_C+ COORD_TO_NT_OFFSET(0x16 + k, 9),
             &hiscore_2p_string[k],
             cnt,
-            0x30
+            TILE_DIGIT_BASE
         );
 
         /* Arrow_Right x4 */
         add_vram_fill_cmd(
             (unsigned char *)(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x11, 0x0C)),
-            0x5D,
+            TILE_PTS_ARROW_RIGHT,
             1
         );
         add_vram_fill_cmd(
             (unsigned char *)(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x11, 0x0F)),
-            0x5D,
+            TILE_PTS_ARROW_RIGHT,
             1
         );
         add_vram_fill_cmd(
             (unsigned char *)(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x11, 0x12)),
-            0x5D,
+            TILE_PTS_ARROW_RIGHT,
             1
         );
         add_vram_fill_cmd(
             (unsigned char *)(NAMETABLE_C+ COORD_TO_NT_OFFSET(0x11, 0x15)),
-            0x5D,
+            TILE_PTS_ARROW_RIGHT,
             1
         );
     }
@@ -2495,10 +2599,10 @@ static void draw_pts_screen_template(void)
 
 static void draw_tank_column(void)
 {
-    add_sprite_16x16(0x81, 0x64, 0x80, 2);
-    add_sprite_16x16(0x81, 0x7C, 0xA0, 2);
-    add_sprite_16x16(0x81, 0x94, 0xC0, 2);
-    add_sprite_16x16(0x81, 0xAC, 0xE0, 2);
+    add_sprite_16x16(PTS_TANK_X, 0x64, PTS_TANK_TYPE0, 2);
+    add_sprite_16x16(PTS_TANK_X, 0x7C, PTS_TANK_TYPE1, 2);
+    add_sprite_16x16(PTS_TANK_X, 0x94, PTS_TANK_TYPE2, 2);
+    add_sprite_16x16(PTS_TANK_X, 0xAC, PTS_TANK_TYPE3, 2);
 }
 static void draw_tank_column_xtimes(unsigned char count)
 {
@@ -2562,7 +2666,7 @@ static void draw_pts_screen(void)
     //y - type index
 
     static const unsigned char tank_kill_pts[4] = {
-        0x10, 0x20, 0x30, 0x40
+        SCORE_TYPE0, SCORE_TYPE1, SCORE_TYPE2, SCORE_TYPE3
     };
     //BONUS! string
     static const unsigned char bonus_label[] = {
@@ -2723,7 +2827,7 @@ static void draw_pts_screen(void)
 static void init_gameover_str_center(void)
 {
     gameover_str_x = 0x70;
-    gameover_str_y = 0xF0;
+    gameover_str_y = SPRITE_OFFSCREEN_Y;
     gameover_scroll_dir = 0;      /* up */
     gameover_str_timer = 0x11;
     FRAME_CNT = 0;
@@ -2758,13 +2862,9 @@ static unsigned char detect_motion(unsigned char id) {
     return 1;
 }
 
-//TODO: zp
 static void play_snd_move(void) {
-    static unsigned char moving;
     if (stage_mode == STAGE_MODE_DEMO) return;  // silent during demo
-
-    moving = detect_motion(0) || detect_motion(1);
-    if (moving) {
+    if (detect_motion(0) || detect_motion(1)) {
         if (!snd_move_active || !sound_is_playing(SND_MOVE)) {
             if (sound_play(SND_MOVE))
                 snd_move_active = 1;
@@ -2801,15 +2901,6 @@ static void handle_gameplay(){
     swap_water_pal_colors();    
 }
 
-
-static void make_gray_frame(void) {
-    memfill(SCREEN_BUFFER, TILE_GREY, 1024);
-    memfill(SCREEN_BUFFER + 0x3C0, 0, 64); // all tiles on pal 0
-    for (i = 0; i < PLAYFIELD_SIZE; ++i) {
-        dst = SCREEN_BUFFER + COORD_TO_NT_OFFSET(FRAME_OFFSET, FRAME_OFFSET + i);
-        memfill(dst, TILE_BLACK, PLAYFIELD_SIZE);
-    }
-}
 
 GameState stage_start_loop(void) {
 
@@ -2927,9 +3018,6 @@ GameState gameplay_loop(void) {
     pause_flag = 0;
     sound_set_paused(0);
     stop_move_engine_sounds();
-    /* Run the original after-death battle loop. */
-    if (gameover_str_timer != 0)
-        SECONDS_CNT = 0xFE;
     after_death_battle_run();
     sound_stop_all();
     draw_pts_screen();
@@ -2937,12 +3025,12 @@ GameState gameplay_loop(void) {
     /* Advance stage like original. */
     ++stage_number;
 
-    if (stage_number == 71) {
+    if (stage_number == FINAL_STAGE) {
         stage_number = 1;
         stage_mode = STAGE_MODE_NORMAL;
     }
 
-    if (stage_number == 36) {
+    if (stage_number == HARD_MODE_STAGE) {
         stage_mode = STAGE_MODE_HARD;
     }
 
@@ -3077,7 +3165,7 @@ static void draw_record_digit(void)
     x = (unsigned char)(0x10 + (i << 5));
 
     while (hiscore_string[i] != 0xFF) {
-        draw_brick_char(hiscore_string[i] + 0x30, x, 0x64);
+        draw_brick_char(hiscore_string[i] + TILE_DIGIT_BASE, x, 0x64);
         x += 0x20;
         ++i;
     }
@@ -3149,10 +3237,10 @@ GameState game_over_loop(void)
 }
 
 static void check_border_reach(void) {
-    if (tank_x[0] > 0xD8) tank_x[0] = 0xD8;
-    if (tank_x[0] < 0x18) tank_x[0] = 0x18;
-    if (tank_y[0] > 0xD8) tank_y[0] = 0xD8;
-    if (tank_y[0] < 0x18) tank_y[0] = 0x18;
+    if (tank_x[0] > 0xD8) tank_x[0] = CONSTRUCT_X_MAX;
+    if (tank_x[0] < 0x18) tank_x[0] = CONSTRUCT_X_MIN;
+    if (tank_y[0] > 0xD8) tank_y[0] = CONSTRUCT_Y_MAX;
+    if (tank_y[0] < 0x18) tank_y[0] = CONSTRUCT_Y_MIN;
 }
 
 static void move_tank_construction(void) {
@@ -3201,8 +3289,8 @@ GameState construction_loop(void) {
     }
 
     null_status();
-    tank_x[0] = 0x10;
-    tank_y[0] = 0x18;
+    tank_x[0] = CONSTRUCT_X_MIN - 8;
+    tank_y[0] = CONSTRUCT_Y_MIN;
     tank_status[0] = TANK_CMD_DRIFT | TANK_DIR_UP; // ROM sets Tank_Status=0x84 here (0x83="right" on the title tank) - use whichever TANK_DIR_* matches low nibble 4
     tank_type[0] = TANK_TYPE_0;
     SPR_PRIORITY = 0;          // tank always drawn in front, even over forest, while editing
@@ -3265,11 +3353,8 @@ GameState construction_loop(void) {
 }
 
 
-
-//TODO:zp
 // Demo AI: decides where each player tank should aim, then writes the
 // corresponding joypad state into PAD_STATE so handle_input() picks it up.
-// Mirrors the original Demo_AI subroutine.
 static void demo_ai(void) {
     // Joypad bytes the demo AI writes for each direction (includes A+B for firing)
     // Index: 0=up, 1=left, 2=down, 3=right
@@ -3279,49 +3364,50 @@ static void demo_ai(void) {
         PAD_DOWN  | PAD_A | PAD_B,   // 2 = down
         PAD_RIGHT | PAD_A | PAD_B,   // 3 = right
     };
-    unsigned char player;
-    unsigned char dir;
-    unsigned char target_found;
+    // temp - enemy id
+    // j - player id
+    // k - direction
+    // cnt - target found
 
-    for (player = 1; player != 0xFF; --player) {
-        target_found = 0;
+    for (j = 1; j != 0xFF; --j) {
+        cnt = 0;
 
         // Priority 1: grab a live bonus on the field
         if (bonus_x != 0 && bonus_timer == 0) {
             ai_x_aim = bonus_x;
             ai_y_aim = bonus_y;
-            target_found = 1;
+            cnt = 1;
         }
 
         // Priority 2: chase the first live enemy found.
         // Original probe order relative to player index: +2, +4, +3
-        if (!target_found) {
+        if (!cnt) {
             static const unsigned char offsets[3] = { 2, 4, 3 };
-            unsigned char oi;
-            for (oi = 0; oi < 3; ++oi) {
-                unsigned char eid = player + offsets[oi];
-                if (eid >= 8) continue;
-                if (tank_status[eid] < 0x80)  continue; // dying/exploding
-                if (tank_status[eid] >= 0xE0) continue; // spawning
-                ai_x_aim = tank_x[eid];
-                ai_y_aim = tank_y[eid];
-                target_found = 1;
+
+            for (i = 0; i < 3; ++i) {
+                temp = j + offsets[i];
+                if (temp >= 8) continue;
+                if (tank_status[temp] < 0x80)  continue; // dying/exploding
+                if (tank_status[temp] >= 0xE0) continue; // spawning
+                ai_x_aim = tank_x[temp];
+                ai_y_aim = tank_y[temp];
+                cnt = 1;
                 break;
             }
         }
 
-        if (target_found) {
-            dir = get_ai_status(player) & 0x03;
-            PAD_STATE[player]  = demo_tank_direction[dir];
-            PAD_STATET[player] = demo_tank_direction[dir];
+        if (cnt) {
+            k = get_ai_status(j) & 0x03;
+            PAD_STATE[j]  = demo_tank_direction[k];
+            PAD_STATET[j] = demo_tank_direction[k];
         } else {
-            PAD_STATE[player]  = 0;
-            PAD_STATET[player] = 0;
+            PAD_STATE[j]  = 0;
+            PAD_STATET[j] = 0;
         }
 
         // Don't let tanks drive off the bottom of the screen
-        if (tank_y[player] >= 0xC8) {
-            PAD_STATET[player] &= 0x0F; // clear direction bits
+        if (tank_y[j] >= ICE_DEMO_LIMIT_Y) {
+            PAD_STATET[j] &= 0x0F; // clear direction bits
         }
     }
 }
@@ -3334,7 +3420,8 @@ static void setup_demo_level(void) {
     make_gray_frame();
 
     // Load demo level data (36th entry in the levels array)
-    stage_number = 36;
+    stage_number = DEMO_STAGE_NUMBER;
+    stage_mode = STAGE_MODE_DEMO; 
     load_stage();
 
     // Overlay the BATTLE / CITY title text at the same positions as the
@@ -3362,10 +3449,10 @@ static void setup_demo_level(void) {
     player_lives[0] = 3;
     player_lives[1] = 3;          // demo always has two players
     enemy_respawn_place_index = 3;
-    stage_mode = STAGE_MODE_DEMO; // 2
+
 
     // Display stage "30" in the corner (original shows 30 during demo)
-    stage_number = 30;
+    stage_number = DEMO_DISPLAY_STAGE;
 
     // SetUp_LevelVARs equivalent (no Snd_Engine)
     for (i = 0; i < sizeof(bullet_status); ++i) bullet_status[i] = 0;
@@ -3414,8 +3501,8 @@ static void setup_demo_level(void) {
     // NO sound_play_background(SND_ENGINE) here — demo is silent
 }
 
-//TODO:zp
 GameState demoplay_loop(void) {
+    //all zp temp variables are used in demo_ai call, don't occupy it here
     unsigned char pressed_exit = 0;
     unsigned char id;   // local counter — do not use global "i" here
 
@@ -3434,7 +3521,9 @@ GameState demoplay_loop(void) {
         demo_ai();
         handle_gameplay();
         render_bonus();
-        for (id = 0; id < 8; ++id) render_tank(id);
+        for (id = 0; id < 8; ++id) {
+            render_tank(id);
+        }
         render_bullets();
         if (level_end_check())
             break;

@@ -31,7 +31,7 @@ static const unsigned char tsa_data[64] = {
 
 
 // 35 levels * 91 bytes each — put in RODATA segment
-static const unsigned char levels[] = {//TODO:check if it is optimized, maybe flat array is better
+static const unsigned char levels[] = {
     // Level 1
        0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xDD, 0xD4, 0xD4, 0xD4
      , 0xD4, 0xD4, 0xD4, 0xDD, 0xD4, 0xD4, 0xD4, 0xD4, 0xD4, 0xD4
@@ -514,6 +514,11 @@ void copy_stage_attributes_to_vram(void) {
 void load_stage(void) {
     unsigned char tile_x, tile_y;
     i = stage_number;
+    // Hard mode (stages 36–70): wrap layout back to 1–35.
+    // Demo mode also uses stage_number=36 but must load the demo level.
+    if (stage_mode != STAGE_MODE_DEMO && i > MAX_STAGE) {
+        i -= MAX_STAGE;   // 36→1, 37→2, …, 70→35
+    }
     src = (unsigned char *)levels;
     while (--i) {
         src += LEVEL_BYTES;

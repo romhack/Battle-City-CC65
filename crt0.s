@@ -20,7 +20,7 @@ FT_SFX_ENABLE   = 0		;undefine to exclude all sound effects code
 
 
     .export _exit,__STARTUP__:absolute=1
-	.exportzp _FRAME_CNT, _SECONDS_CNT, _PAD_STATE, _PAD_STATET, _SPR_PRIORITY
+	.exportzp _FRAME_CNT, _SECONDS_CNT, _PAD_STATE, _PAD_STATET, _SPR_PRIORITY, _SPR_X, _SPR_Y, _CHR_BYTE
 	
 	.import push0,popa,popax,_main,zerobss,copydata
 
@@ -105,11 +105,14 @@ COUNTER:	  .res 1
 BRICK_CHAR_X: .res 1
 BRICK_CHAR_Y: .res 1
 CHR_BYTE: .res 1
+_CHR_BYTE = CHR_BYTE
 MASK_CHR_BYTE: .res 1
 LOW_PTR_BYTE: .res 1
 HIGH_PTR_BYTE: .res 1
 SPR_X: .res 1
+_SPR_X = SPR_X
 SPR_Y: .res 1
+_SPR_Y = SPR_Y
 BUFFER_POS: .res 1
 BG_PAL_NUMBER: .res 1
 SECONDS_CNT: .res 1
@@ -157,9 +160,13 @@ _exit:
     inx
 	lda #0
 	sta BUFFER_POS
+	sta FRAME_CNT1
+	sta FRAME_CNT2
+	sta SPRID
 
 
 	jsr	copydata
+
     lda #<(__STACK_START__+__STACKSIZE__) 
     sta	sp
     lda	#>(__STACK_START__+__STACKSIZE__)
@@ -177,6 +184,7 @@ _exit:
 	sta SPRSTEP
 	lda #%10000000
 	sta <PPU_CTRL_VAR	
+
 	sta PPU_CTRL		;enable NMI
 
 	jmp _main

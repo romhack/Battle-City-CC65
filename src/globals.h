@@ -26,15 +26,119 @@
 #define COORD_TO_NT_OFFSET(x, y) (((y) << 5) + (x))
 //neslib hides left column for scrolling, battle city - not, define custom mask
 #define MASK_SHOW_ALL (MASK_BG | MASK_SPR | MASK_EDGE_BG | MASK_EDGE_SPR)
-#define TILE_BLACK          0x00
-#define TILE_ARMOR          0x10
-#define TILE_GREY           0x11
-#define TILE_PLAYER_LIVE    0x14
-#define TILE_ICE            0x21
-#define TILE_FOREST         0x22
+#define TILE_BLACK            0x00
+#define TILE_ARMOR            0x10
+#define TILE_GREY             0x11
+#define TILE_PLAYER_LIVE      0x14
+#define TILE_ICE              0x21
+#define TILE_FOREST           0x22
+#define TILE_BRICK            0x01   /* generic brick (tiles 01–0F) */
+#define TILE_BRICK_THRESHOLD  0x20   /* tiles >= 0x20 are passable */
+#define TILE_WATER_THRESHOLD  0x12   /* tiles >= 0x12 are water/forest/ice (bullets pass) */
+#define TILE_HQ_BASE          0xC8   /* first of 4 HQ eagle tiles C8–CB */
+#define TILE_HQ_MASK          0xFC   /* (tile & 0xFC) == 0xC8 → HQ */
+#define TILE_EMPTY_BLOCK      0x00   /* empty nametable tile */
+#define TILE_PTS_ARROW_LEFT   0x5B
+#define TILE_PTS_ARROW_RIGHT  0x5D
+#define TILE_PTS_LINE         0x5C
+#define TILE_REINFORCE_ICON   0x6A
+#define TILE_IP_ICON          0x58
+#define TILE_IIP_ICON         0x5A
+#define TILE_IP_SUFFIX        0x13   /* second tile of I/IP icon */
+#define TILE_FLAG_UPPER       0x6C
+#define TILE_FLAG_UPPER_2     0xFC
+#define TILE_FLAG_LOWER       0x6D
+#define TILE_FLAG_LOWER_2     0xFD
+#define TILE_GREY_DIGIT_BASE  0x6E   /* digit glyphs start here */
+#define TILE_DIGIT_BASE       0x30   /* score/number digit base */
+#define TILE_DROP             0x9D
+#define TILE_DOT              0x69
+#define TILE_500_PTS          0x3B
+/* --- Sprite tile bases --- */
+#define TILE_BULLET_BASE      0xB1   /* 8×16 bullet sprites (4 dirs × 2 tiles) */
+#define TILE_RICOCHET_BASE    0xF1   /* ricochet / small-explosion frames */
+#define TILE_RESPAWN_BASE     0xA1   /* respawn ring animation base */
+#define TILE_KILL_PTS_BASE    0xA9   /* kill-points overlay base */
+#define TILE_BIG_EXPLODE_BASE 0xD1   /* 32×32 explosion quadrant base */
+#define TILE_BONUS_BASE       0x81   /* bonus item sprite base (4 tiles each) */
+#define TILE_INVINC_BASE      0x29   /* spawn-shield aura base */
+#define TILE_GAMEOVER_L       0x79   /* "GAME" half */
+#define TILE_GAMEOVER_R       0x7D   /* "OVER" half */
+#define TILE_PAUSE_P          0x17
+#define TILE_PAUSE_A          0x19
+#define TILE_PAUSE_U          0x1B
+#define TILE_PAUSE_S          0x1D
+#define TILE_PAUSE_E          0x1F
+
+/* --- HQ position (pixel centre of eagle) --- */
+#define HQ_X        0x78
+#define HQ_Y        0xD8
+
+/* --- Screen hide position (push sprite off bottom) --- */
+#define SPRITE_OFFSCREEN_Y  0xF0
+
+/* --- Construction mode borders --- */
+#define CONSTRUCT_X_MIN  0x18
+#define CONSTRUCT_X_MAX  0xD8
+#define CONSTRUCT_Y_MIN  0x18
+#define CONSTRUCT_Y_MAX  0xD8
+
+/* --- Title menu --- */
+#define TITLE_TANK_X       0x48
+#define TITLE_MENU_Y_BASE  0x8B   /* top of first menu item */
+
+/* --- Timers (in frames or seconds) --- */
+#define BLINK_TIMER_INIT        0xC8  /* friendly-fire grace period */
+#define ICE_SLIDE_INIT          0x9C  /* full ice-slide value (0x80|0x1C) */
+#define ICE_SLIDE_DURATION      0x1C  /* lower-5-bit slide frames */
+#define BONUS_SCORE_FRAMES      0x32  /* "500" display duration */
+#define GAMEOVER_TIMER_INIT     0x0D  /* per-player gameover string */
+#define GAMEOVER_TIMER_CENTER   0x11  /* level-end centred gameover */
+#define HQ_ARMOR_TIME           20    /* shovel bonus armour seconds */
+#define INVINCIBLE_TIME         3     /* spawn-shield seconds */
+#define ENEMY_FREEZE_TIME       10    /* watch-bonus freeze seconds */
+#define ENEMY_FIRE_MASK         0x1F  /* 1/32 chance per frame */
+#define RANDOM_AIM_MASK         0x0F  /* 1/16 retarget chance */
+#define RANDOM_DIR_MASK         0x03  /* 2-bit random */
+#define COAST_COOLDOWN          4     /* drift sub-step (status -= 4) */
+#define ICE_DEMO_LIMIT_Y        0xC8  /* demo: stop driving down */
+
+#define SCORE_TYPE0   0x10   /* 100 pts */
+#define SCORE_TYPE1   0x20   /* 200 pts */
+#define SCORE_TYPE2   0x30   /* 300 pts */
+#define SCORE_TYPE3   0x40   /* 400 pts */
+#define SCORE_BONUS   0x50   /* 500 pts (bonus pickup) */
+
+#define PTS_TANK_TYPE0  0x80
+#define PTS_TANK_TYPE1  0xA0
+#define PTS_TANK_TYPE2  0xC0
+#define PTS_TANK_TYPE3  0xE0
+#define PTS_TANK_X      0x81
 
 #define STAGE_MIN           1
 #define STAGE_MAX           35
+
+#define NAMETABLE_A       0x2000
+#define NAMETABLE_C       0x2800
+#define ATTR_OFFSET       0x3C0   /* attribute table within SCREEN_BUFFER */
+#define ATTR_SIZE         64
+
+#define TANK_STATUS_EXPLODE_INIT  0x73  /* written to tank_status to start explosion */
+#define TANK_STATUS_ALIVE_MIN     0x80  /* lowest "active" status */
+#define TANK_STATUS_ALIVE_MAX     0xE0  /* >= this = spawning, not active */
+#define TANK_TYPE_MASK            0xF0
+#define TANK_TYPE_HEAVY           0xE0
+#define TANK_TYPE_HEAVY_ARMOR     0x03
+#define TANK_TYPE_HEAVY_BONUS_FIX 0xE4
+#define BULLET_STATUS_FLY_MASK    0xF0
+#define OCCUPIED_BIT              0x80
+#define BONUS_TABLE_SIZE          8
+#define MAX_ENEMIES               20
+#define DEMO_STAGE_NUMBER         36
+#define DEMO_DISPLAY_STAGE        30
+#define HARD_MODE_STAGE           36
+#define FINAL_STAGE               71
+#define MAX_STAGE                 35
 
 /*============================================================
  *  TANK STATUS (upper 4 bits = command)
@@ -150,6 +254,12 @@ extern unsigned char PAD_STATE[2];
 #pragma zpsym("PAD_STATE")
 extern unsigned char PAD_STATET[2];
 #pragma zpsym("PAD_STATET")
+extern unsigned char SPR_X;
+#pragma zpsym("SPR_X")
+extern unsigned char SPR_Y;
+#pragma zpsym("SPR_Y")
+extern unsigned char CHR_BYTE;
+#pragma zpsym("CHR_BYTE")
 
 /*============================================================
  *  ZERO PAGE VARIABLES
