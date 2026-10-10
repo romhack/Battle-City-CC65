@@ -18,10 +18,15 @@ labels.txt
 /assets/*.bin
 
 # ---------------------------------------------------------------------------
-# The original ROM itself (any dump), wherever the user keeps it
+# The original ROM itself (any dump), wherever the user keeps it.
+# rom/ is kept as an empty placeholder folder: git stores files, not folders,
+# so .gitkeep is what makes it appear in a fresh clone.  Everything else in
+# there is ignored - note the /* form, a bare /rom/ would exclude the folder
+# itself and the ! rule below would stop working.
 # ---------------------------------------------------------------------------
 *.nes
 /rom/*
+!/rom/.gitkeep
 /roms/
 
 # ---------------------------------------------------------------------------
