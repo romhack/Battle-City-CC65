@@ -100,8 +100,6 @@ pause_saved_id: .res 1      ; whatever was on PAUSE_CHANNEL right before
 loop_counter:   .res 3      ; global loop counters 0/1/2 (see note 3 above)
 snd_paused:     .res 1
 
-; Total BSS usage: 52 + 1 + 3 + 1 = 57 bytes 
-
 PAUSE_CHANNEL = 1            ; Sound_Pause's data always says channel 2
                               ; (1-based) = square2 = index 1 (0-based)
 
@@ -810,7 +808,7 @@ sound_ptr_tbl:
     .word sound_BonusPts
 
 ; ----------------------------------------------------------------------
-; Sound data — byte-for-byte identical to the original ROM.
+; Sound data
 ; ----------------------------------------------------------------------
 
 Sound_Pause:

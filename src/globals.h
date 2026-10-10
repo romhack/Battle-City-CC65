@@ -73,6 +73,7 @@
 /* --- HQ position (pixel centre of eagle) --- */
 #define HQ_X        0x78
 #define HQ_Y        0xD8
+#define HQ_STATUS_ALIVE 0x80
 
 /* --- Screen hide position (push sprite off bottom) --- */
 #define SPRITE_OFFSCREEN_Y  0xF0
@@ -88,6 +89,7 @@
 #define TITLE_MENU_Y_BASE  0x8B   /* top of first menu item */
 
 /* --- Timers (in frames or seconds) --- */
+#define FRAMES_IN_SECOND       63
 #define BLINK_TIMER_INIT        0xC8  /* friendly-fire grace period */
 #define ICE_SLIDE_INIT          0x9C  /* full ice-slide value (0x80|0x1C) */
 #define ICE_SLIDE_DURATION      0x1C  /* lower-5-bit slide frames */

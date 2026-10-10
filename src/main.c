@@ -94,7 +94,7 @@ void reset_screen(void){
 	
 	load_spr_pal();
 	set_bg_pal_number(3);
-	memfill(SCREEN_BUFFER, 0, 1024);
+	memfill(SCREEN_BUFFER, 0, SCREEN_WIDTH * SCREEN_COLS);
     SPR_PRIORITY = 0x20;//OAM_BEHIND for forest overlap
 	oam_set(0);
 	init_8_char_string(hiscore_1p_string);
@@ -105,10 +105,10 @@ void reset_screen(void){
 		hiscore_string[2] = 2;//Write 20000 to HiScore
 		cursor_pos = 0;
 	}
-	vram_adr(0x2000);
-    vram_write(SCREEN_BUFFER, 1024);
-	vram_adr(0x2800);
-    vram_write(SCREEN_BUFFER, 1024);
+	vram_adr(NAMETABLE_A);
+    vram_write(SCREEN_BUFFER, SCREEN_WIDTH * SCREEN_COLS);
+	vram_adr(NAMETABLE_C);
+    vram_write(SCREEN_BUFFER, SCREEN_WIDTH * SCREEN_COLS);
 
 }
 
@@ -158,16 +158,16 @@ void draw_title_screen(void){
 	draw_brick_str(city_string, 0x3C, 0x56);
 	draw_str(one_string, 2, 3, 0);
 	temp = skip_leading_zeros(hiscore_1p_string, 0);
-	draw_str(&hiscore_1p_string[temp], 3 + temp, 3, 0x30);
+	draw_str(&hiscore_1p_string[temp], 3 + temp, 3, TILE_DIGIT_BASE);
 	
 	draw_str(hi_string, 0xB, 3, 0);
 	temp = skip_leading_zeros(hiscore_string, 0);
-	draw_str(&hiscore_string[temp], 0xD + temp, 3, 0x30);
+	draw_str(&hiscore_string[temp], 0xD + temp, 3, TILE_DIGIT_BASE);
 	
 	if (cursor_pos != 0){// If cursor at RESET wasn't at 1 player position, need to draw 2nd player data.
 		draw_str(two_string, 0x15, 3, 0);	
 		temp = skip_leading_zeros(hiscore_2p_string, 0);
-		draw_str(&hiscore_2p_string[temp], 0x14 + temp, 3, 0x30);
+		draw_str(&hiscore_2p_string[temp], 0x14 + temp, 3, TILE_DIGIT_BASE);
 	}
 	draw_str(one_player_string, 0xB, 0x11, 0);
 	draw_str(two_players_string, 0xB, 0x13, 0);
@@ -176,8 +176,8 @@ void draw_title_screen(void){
 	draw_str(year_string, 0x4, 0x19, 0);
 	draw_str(rights_string, 0x6, 0x1B, 0);
 	
-	vram_adr(0x2800); 
-    vram_write(SCREEN_BUFFER, 1024);
+	vram_adr(NAMETABLE_C); 
+    vram_write(SCREEN_BUFFER, SCREEN_WIDTH * SCREEN_COLS);
 }
 
 GameState title_intro_loop(void) {  
@@ -198,7 +198,7 @@ GameState title_intro_loop(void) {
 }
 
 static void make_gray_frame(void) {
-    memfill(SCREEN_BUFFER, TILE_GREY, 1024);
+    memfill(SCREEN_BUFFER, TILE_GREY, SCREEN_WIDTH * SCREEN_COLS);
     memfill(SCREEN_BUFFER + ATTR_OFFSET, 0, 64); // all tiles on pal 0
     for (i = 0; i < PLAYFIELD_SIZE; ++i) {
         dst = SCREEN_BUFFER + COORD_TO_NT_OFFSET(FRAME_OFFSET, FRAME_OFFSET + i);
@@ -255,9 +255,9 @@ void show_secret_msg(void) {
     ppu_off();
     scroll(0, 0);                       // show nametable A (title art lives in C)
     oam_clear();                        // no title tank on this screen
-    memfill(SCREEN_BUFFER, 0, 1024);
+    memfill(SCREEN_BUFFER, 0, SCREEN_WIDTH * SCREEN_COLS);
     vram_adr(NAMETABLE_A);
-    vram_write(SCREEN_BUFFER, 1024);
+    vram_write(SCREEN_BUFFER, SCREEN_WIDTH * SCREEN_COLS);
     set_ppu();
     ppu_mask(MASK_SHOW_ALL);
 
@@ -283,7 +283,7 @@ void show_secret_msg(void) {
     oam_clear();
     make_gray_frame();
     vram_adr(NAMETABLE_A);
-    vram_write(SCREEN_BUFFER, 1024);
+    vram_write(SCREEN_BUFFER, SCREEN_WIDTH * SCREEN_COLS);
     set_ppu();
     ppu_mask(MASK_SHOW_ALL);
 }
@@ -355,7 +355,7 @@ void command_explode(unsigned char id){
         initialize_tank(id);
         return;
     }
-    if (hq_status != 0x80)
+    if (hq_status != HQ_STATUS_ALIVE)
         return; //HQ is not alive, do nothing
     if (id == 1){//player 2 has no lives
         if (player_lives[0] == 0)
@@ -408,13 +408,13 @@ void get_random_aim(unsigned char id) {
     // odd-id tanks prefer player 2 - but fall back to whichever player
     // still has a tank in play.
     if (tank_status[0] == 0) {
-        tank_status[id] = (tank_status[id] & 0x0F) | TANK_CMD_TARGET_P2;  // P1 gone
+        SET_TANK_CMD(id, TANK_CMD_TARGET_P2);// P1 gone
     } else if ((id & 1) == 0) {
-        tank_status[id] = (tank_status[id] & 0x0F) | TANK_CMD_TARGET_P1;  // even id
+        SET_TANK_CMD(id, TANK_CMD_TARGET_P1);  // even id
     } else if (tank_status[1] == 0) {
-        tank_status[id] = (tank_status[id] & 0x0F) | TANK_CMD_TARGET_P1;  // P2 gone
+        SET_TANK_CMD(id, TANK_CMD_TARGET_P1); // P2 gone
     } else {
-        tank_status[id] = (tank_status[id] & 0x0F) | TANK_CMD_TARGET_P2;  // odd id, P2 alive
+        SET_TANK_CMD(id, TANK_CMD_TARGET_P2);  // odd id, P2 alive
     }
 }
 
@@ -432,6 +432,7 @@ void command_get_random_status(unsigned char id){
     } else {
         temp = tank_status[id] - 1;
     }
+    
     tank_status[id] = (temp & 0x03) | TANK_CMD_MOVE;	
 }
 void command_move(unsigned char id){
@@ -493,7 +494,7 @@ void command_move(unsigned char id){
     if (get_random() & 3) {
         // 75% chance: Enter "coast" state (Command 8). 
         // Keeps current direction, pauses movement for ~2 frames.
-        tank_status[id] = (tank_status[id] & 0x0F) | 0x88;
+        SET_TANK_CMD(id, 0x88);
         track_pos[id] ^= 4; 
         return;
     }
@@ -501,7 +502,7 @@ void command_move(unsigned char id){
     // 25% chance (get_random() & 3 == 0)
     if ((tank_x[id] & 7) == 0 && (tank_y[id] & 7) == 0) {
         // On a tile boundary: Escalate to Command 9 (Get Random Status/Aim)
-        tank_status[id] = (tank_status[id] & 0x0F) | 0x90;
+        SET_TANK_CMD(id, TANK_CMD_RANDOM);
     }
     // Not on an 8x8 tile boundary: Immediate 180-degree reverse
     tank_status[id] ^= 2; 
@@ -528,7 +529,7 @@ void command_drift(unsigned char id) {
     if ((tank_status[id] & 0x0C) != 0) return;
 
     // Bits 3-2 reached zero — restore command A (move), keep direction in low nibble
-    tank_status[id] = (tank_status[id] & 0x0F) | 0xA0;
+    SET_TANK_CMD(id, TANK_CMD_MOVE);
 }
 
 // Picks the new direction/status for a tank based on its position
@@ -1301,7 +1302,7 @@ static void reset_stage_vars(){
     load_Ip_icons();
     load_level_flag();
     set_enemy_count();
-    hq_status = 0x80;
+    hq_status = HQ_STATUS_ALIVE;
     sound_play_background(SND_ENGINE);
 }
 
@@ -1373,7 +1374,7 @@ static void handle_all_tanks_commands(){
     //specifically don't take zp variable, because further commands can have complex functions
     unsigned char id;
 
-    if (enemy_freeze_timer != 0 && (FRAME_CNT & 63) == 0) {
+    if (enemy_freeze_timer != 0 && (FRAME_CNT & FRAMES_IN_SECOND) == 0) {
         --enemy_freeze_timer;
     }
     for (id = 7; id != 0xFF; --id) {
@@ -1382,10 +1383,10 @@ static void handle_all_tanks_commands(){
                 continue;//Process statuses on specific frames: 0, 4, 8, 12
         } else {
             if (enemy_freeze_timer != 0) {
-                if (tank_status[id] >= 0x80 && tank_status[id] < 0xE0)
+                if (tank_status[id] >= TANK_STATUS_ALIVE_MIN && tank_status[id] < TANK_STATUS_ALIVE_MAX)
                     continue;//Dont process dead enemies
             }
-            if ((tank_type[id] & 0xF0) != 0xA0) {//Enemy #2 status processed 2 times more often, so it moves faster
+            if (GET_TANK_BASE_TILE(id) != 0xA0) {//Enemy #2 status processed 2 times more often, so it moves faster
                 if (((id ^ FRAME_CNT) & 1) == 0)
                     continue;
             }
@@ -1521,7 +1522,7 @@ void handle_invincibility(void) {
             continue;
 
         // decrement timer once per second
-        if ((FRAME_CNT & 63) == 0)
+        if ((FRAME_CNT & FRAMES_IN_SECOND) == 0)
             --invincible_timer[i];
 
         // draw aura: tile $29/$2B alternating every 2 frames
@@ -1556,18 +1557,18 @@ static void make_shot() {
     temp = tank_type[i] & TANK_TYPE_MASK;
     
     // Types 0, 4, 5, 7 ($00, $80, $A0, $E0) all fire normal bullets.
-    if (temp == 0x00 ) {
+    if (temp == TANK_TYPE_0 ) {
         return; 
     }
 
     // bonus/fast enemy — must be before the $80 test
-    if (temp == 0xC0) {               
+    if (temp == TANK_TYPE_6) {               
         bullet_property[i] = 0x01;
         return;
     }
     
     // Type 3 ($60) fires fast, armor-piercing bullets (property 3)
-    if (temp == 0x60) {
+    if (temp == TANK_TYPE_3) {
         bullet_property[i] = 0x03;
         return;
     }
@@ -1740,7 +1741,7 @@ static void handle_hq_armor(void) {
 
     if (hq_armor_timer == 0)       return;
     // Decrement once per second
-    if ((FRAME_CNT & 63) == 0) {
+    if ((FRAME_CNT & FRAMES_IN_SECOND) == 0) {
         --hq_armor_timer;
         if (hq_armor_timer == 0) {
             draw_normal_hq();   // armour expired — restore normal tiles
@@ -1766,7 +1767,7 @@ static void handle_hq_armor(void) {
 //     steps 4-5  – large 32×32 sprite (tile bases 0xD1+0, 0xD1+0x10)
 //     step  0    – no sprite (animation finished)
 static void handle_hq_explode(void) {
-    if (hq_status == 0 || hq_status & 0x80) return;//hq exploded or intact
+    if (hq_status == 0 || hq_status & HQ_STATUS_ALIVE) return;//hq exploded or intact
 
     pal = 3;
     --hq_status;
@@ -1826,7 +1827,7 @@ static unsigned char bullet_bg_impact(unsigned char *ricochet_played) {
             sound_play(SND_HQ_EXPLODE);
             sound_play(SND_PLAYER_EXPLODE);
             draw_destroyed_hq();
-            bullet_status[i] = 0x33;
+            bullet_status[i] = BULLET_RICOCHET_INIT;
         }
         return 0;
     }
@@ -1836,7 +1837,7 @@ static unsigned char bullet_bg_impact(unsigned char *ricochet_played) {
         return 0;
 
     // Solid obstacle – always set ricochet animation
-    bullet_status[i] = 0x33;
+    bullet_status[i] = BULLET_RICOCHET_INIT;
 
     // Screen border ($11) – no tile destruction
     if (temp == TILE_GREY) {
@@ -1886,7 +1887,7 @@ static void handle_bullet_bg_collisions(void) {
 
     for (i = 9; i != 0xFF; --i) {
 
-        if ((bullet_status[i] & 0xF0) != BULLET_CMD_FLY)
+        if (GET_BULLET_CMD(i) != BULLET_CMD_FLY)
             continue;
 
         if (bullet_property[i] == 0) {     // slow bullet: skip every other frame
@@ -1965,7 +1966,7 @@ void add_score(unsigned char player_id) {
 // Awards an extra life to any player whose score has reached 200,000.
 // Checks both players every call; player_add_life_flag prevents duplicates.
 void add_life() {
-    if (hq_status != 0x80) return;  // HQ destroyed — no bonus lives
+    if (hq_status != HQ_STATUS_ALIVE) return;  // HQ destroyed — no bonus lives
 
     // Player 1
     if (player_add_life_flag[0] == 0 && hiscore_1p_string[2] >= 2) {
@@ -2030,14 +2031,14 @@ static void bonus_watch() {
 }
 
 static void bonus_shovel() {
-    if (hq_status & 0x80) {  // HQ still standing (bit 7 set = intact)
+    if (hq_status & HQ_STATUS_ALIVE) {  // HQ still standing (bit 7 set = intact)
         draw_armoured_hq();
         hq_armor_timer = HQ_ARMOR_TIME;
     }
 }
 
 static void bonus_star() {
-    if (player_type[i] == 0x60) return;  // already max type
+    if (player_type[i] == TANK_TYPE_3) return;  // already max type
     player_type[i] += 0x20;
     tank_type[i] = player_type[i];
 }
@@ -2046,7 +2047,7 @@ static void bonus_grenade() {
     //cnt - iterator
     sound_play(SND_ENEMY_EXPLODE);
     for (cnt = 7; cnt >= 2; --cnt) {
-        if (tank_status[cnt] >= 0x80 && tank_status[cnt] < 0xE0) {
+        if (tank_status[cnt] >= TANK_STATUS_ALIVE_MIN && tank_status[cnt] < TANK_STATUS_ALIVE_MAX) {
             tank_status[cnt] = TANK_STATUS_EXPLODE_INIT;
             tank_type[cnt] = 0;
         }
@@ -2088,8 +2089,8 @@ void handle_bonus_collision(void) {
 
     // Check players 1 then 0 (loop counts down from 1)
     for (i = 1; i != 0xFF; --i) {
-        if (tank_status[i] < 0x80) continue;         // not active
-        if (tank_status[i] >= 0xE0) continue;        // exploding/respawning
+        if (tank_status[i] < TANK_STATUS_ALIVE_MIN) continue;         // not active
+        if (tank_status[i] >= TANK_STATUS_ALIVE_MAX) continue;        // exploding/respawning
         
         if (OUT_OF_RANGE_12(tank_x[i], bonus_x)) continue;
         if (OUT_OF_RANGE_12(tank_y[i], bonus_y)) continue;
@@ -2163,7 +2164,7 @@ static void handle_bullet_tank_collisions(void) {
         current_y = tank_y[i];
         // Enemy bullets are IDs 2..7
         for (j = 7; j >= 2; --j) {
-            if ((bullet_status[j] & 0xF0) != BULLET_CMD_FLY)
+            if (GET_BULLET_CMD(j) != BULLET_CMD_FLY)
                 continue;                 
 
             // Collision if both axes differ by less than 10 pixels
@@ -2171,7 +2172,7 @@ static void handle_bullet_tank_collisions(void) {
             if (OUT_OF_RANGE_10(bullet_y[j], current_y)) continue;
 
             // Hit → start ricochet animation
-            bullet_status[j] = 0x33;
+            bullet_status[j] = BULLET_RICOCHET_INIT;
 
             // Spawn shield? Bullet disappears, no damage
             if (invincible_timer[i] != 0) {
@@ -2200,13 +2201,13 @@ static void handle_bullet_tank_collisions(void) {
         // Player bullets: IDs 0,1,8,9. Original checks (b & 6) == 0.
         for (idx = 0; idx < 4; ++idx) {
             j = PlayerBulletIds[idx];
-            if ((bullet_status[j] & 0xF0) != BULLET_CMD_FLY) continue;
+            if (GET_BULLET_CMD(j) != BULLET_CMD_FLY) continue;
 
             if (OUT_OF_RANGE_10(bullet_x[j], current_x)) continue;
             if (OUT_OF_RANGE_10(bullet_y[j], current_y)) continue;
 
             // Collision
-            bullet_status[j] = 0x33;
+            bullet_status[j] = BULLET_RICOCHET_INIT;
 
             // Bonus tank → spawn item
             if (tank_type[i] & 4) {
@@ -2256,13 +2257,13 @@ static void handle_bullet_tank_collisions(void) {
         for (idx = 0; idx < 4; ++idx) {
             j = PlayerBulletIds[idx];         // only player bullet IDs
             if (((i ^ j) & 1) == 0) continue;    // skip own bullet
-            if ((bullet_status[j] & 0xF0) != BULLET_CMD_FLY) continue;
+            if (GET_BULLET_CMD(j) != BULLET_CMD_FLY) continue;
 
             if (OUT_OF_RANGE_10(bullet_x[j], current_x)) continue;
             if (OUT_OF_RANGE_10(bullet_y[j], current_y)) continue;
 
             // Collision → ricochet
-            bullet_status[j] = 0x33;
+            bullet_status[j] = BULLET_RICOCHET_INIT;
 
             // Invincible shield? Bullet disappears completely
             if (invincible_timer[i] != 0) {
@@ -2285,11 +2286,11 @@ static void handle_bullet_bullet_collisions(void) {
     //temp - bullet index
     for (temp = 0; temp < 4; ++temp) {
         i = PlayerBulletIds[temp]; //only player bullets
-        if ((bullet_status[i] & 0xF0) != BULLET_CMD_FLY) continue;   // A not flying
+        if (GET_BULLET_CMD(i) != BULLET_CMD_FLY) continue;   // A not flying
 
         for (j = 9; j != 0xFF; --j) {
             if ((j & 7) == (i & 7)) continue;               // self (aliased 0/8, 1/9)
-            if ((bullet_status[j] & 0xF0) != BULLET_CMD_FLY) continue; // B not flying
+            if (GET_BULLET_CMD(j) != BULLET_CMD_FLY) continue; // B not flying
 
             if (OUT_OF_RANGE_6(bullet_x[j], bullet_x[i])) continue;
             if (OUT_OF_RANGE_6(bullet_y[j], bullet_y[i])) continue;
@@ -2378,7 +2379,7 @@ static void draw_pts_screen_template(void)
     ppu_off();
 
     /* Null_NT_Buffer */
-    memfill(SCREEN_BUFFER, 0, 1024);
+    memfill(SCREEN_BUFFER, 0, SCREEN_WIDTH * SCREEN_COLS);
 
     /* Fill_Attrib_Table */
     memfill(SCREEN_BUFFER + ATTR_OFFSET, 0x50, 4);
@@ -2396,7 +2397,7 @@ static void draw_pts_screen_template(void)
     SCREEN_BUFFER[0x3F7] = 0x05;
 
     vram_adr(NAMETABLE_C);
-    vram_write(SCREEN_BUFFER, 1024);
+    vram_write(SCREEN_BUFFER, SCREEN_WIDTH * SCREEN_COLS);
 
     /* Set_PPU */
     set_ppu();
@@ -2632,7 +2633,7 @@ static void draw_score_digits(
             NAMETABLE_C + COORD_TO_NT_OFFSET(base_x + k, y),
             &str[k],
             cnt,
-            0x30
+            TILE_DIGIT_BASE
         );
     }
 }
@@ -2937,7 +2938,7 @@ static void stop_move_engine_sounds(void)
 static void freeze_player_on_hq_destroy(void)
 {
     /* Original freezes player input when HQ is not intact. */
-    if (hq_status != 0x80) {
+    if (hq_status != HQ_STATUS_ALIVE) {
         PAD_STATE[0]  = 0;
         PAD_STATE[1]  = 0;
         PAD_STATET[0] = 0;
@@ -3036,7 +3037,7 @@ GameState gameplay_loop(void) {
 
     /* Original game-over condition after score screen. */
     if ((unsigned char)(player_lives[0] + player_lives[1]) == 0 ||
-        hq_status != 0x80) {
+        hq_status != HQ_STATUS_ALIVE) {
         return STATE_GAME_OVER;
     }
 
@@ -3086,10 +3087,10 @@ static void clear_nt(void)
 {
     ppu_off();
 
-    memfill(SCREEN_BUFFER, 0, 1024);
+    memfill(SCREEN_BUFFER, 0, SCREEN_WIDTH * SCREEN_COLS);
 
     vram_adr(NAMETABLE_A);
-    vram_write(SCREEN_BUFFER, 1024);
+    vram_write(SCREEN_BUFFER, SCREEN_WIDTH * SCREEN_COLS);
 
     set_ppu();
     ppu_mask(MASK_SHOW_ALL);
@@ -3110,13 +3111,13 @@ static void draw_brick_gameover(void)
 
     ppu_off();
 
-    memfill(SCREEN_BUFFER, 0, 1024);
+    memfill(SCREEN_BUFFER, 0, SCREEN_WIDTH * SCREEN_COLS);
 
     draw_brick_str(game_str, 0x3C, 0x46);
     draw_brick_str(over_str, 0x3C, 0x78);
 
     vram_adr(NAMETABLE_A);
-    vram_write(SCREEN_BUFFER, 1024);
+    vram_write(SCREEN_BUFFER, SCREEN_WIDTH * SCREEN_COLS);
 
     set_ppu();
     scroll(0, 0); 
@@ -3138,10 +3139,10 @@ static void draw_brick_gameover(void)
     /* Original End_Draw_Brick_GameOver clears the name table. */
     ppu_off();
 
-    memfill(SCREEN_BUFFER, 0, 1024);
+    memfill(SCREEN_BUFFER, 0, SCREEN_WIDTH * SCREEN_COLS);
 
     vram_adr(NAMETABLE_A);
-    vram_write(SCREEN_BUFFER, 1024);
+    vram_write(SCREEN_BUFFER, SCREEN_WIDTH * SCREEN_COLS);
 
     set_ppu();
     ppu_mask(MASK_SHOW_ALL);
@@ -3182,13 +3183,13 @@ static void draw_record_hiscore(void)
 
     ppu_off();
 
-    memfill(SCREEN_BUFFER, 0, 1024);
+    memfill(SCREEN_BUFFER, 0, SCREEN_WIDTH * SCREEN_COLS);
 
     draw_brick_str(hiscore_str, 0x10, 0x32);
     draw_record_digit();
 
     vram_adr(NAMETABLE_A);
-    vram_write(SCREEN_BUFFER, 1024);
+    vram_write(SCREEN_BUFFER, SCREEN_WIDTH * SCREEN_COLS);
 
     set_ppu();
     ppu_mask(MASK_SHOW_ALL);
@@ -3222,7 +3223,7 @@ GameState game_over_loop(void)
     set_bg_pal_number(3);
 
     ppu_off();
-    memfill(SCREEN_BUFFER, 0, 1024);
+    memfill(SCREEN_BUFFER, 0, SCREEN_WIDTH * SCREEN_COLS);
 
     draw_title_screen();
 
@@ -3283,7 +3284,7 @@ GameState construction_loop(void) {
         ppu_off();
         make_gray_frame();
         vram_adr(NAMETABLE_A);
-        vram_write(SCREEN_BUFFER, 1024);
+        vram_write(SCREEN_BUFFER, SCREEN_WIDTH * SCREEN_COLS);
         set_ppu();
         ppu_mask(MASK_SHOW_ALL);
     }
@@ -3387,8 +3388,8 @@ static void demo_ai(void) {
             for (i = 0; i < 3; ++i) {
                 temp = j + offsets[i];
                 if (temp >= 8) continue;
-                if (tank_status[temp] < 0x80)  continue; // dying/exploding
-                if (tank_status[temp] >= 0xE0) continue; // spawning
+                if (tank_status[temp] < TANK_STATUS_ALIVE_MIN)  continue; // dying/exploding
+                if (tank_status[temp] >= TANK_STATUS_ALIVE_MAX) continue; // spawning
                 ai_x_aim = tank_x[temp];
                 ai_y_aim = tank_y[temp];
                 cnt = 1;
@@ -3413,7 +3414,7 @@ static void demo_ai(void) {
 }
 
 // Load the demo level into the screen buffer, draw title brick text over it,
-// then set up all gameplay variables.  Mirrors Load_DemoLevel + SetUp_LevelVARs.
+// then set up all gameplay variables.
 static void setup_demo_level(void) {
     // --- video setup ---
     ppu_off();
@@ -3424,8 +3425,6 @@ static void setup_demo_level(void) {
     stage_mode = STAGE_MODE_DEMO; 
     load_stage();
 
-    // Overlay the BATTLE / CITY title text at the same positions as the
-    // title screen so the transition looks seamless.
     {
         static const unsigned char battle_str[] = "BATTLE\xFF";
         static const unsigned char city_str[]   = "CITY\xFF";
@@ -3434,7 +3433,7 @@ static void setup_demo_level(void) {
     }
 
     vram_adr(NAMETABLE_A);
-    vram_write(SCREEN_BUFFER, 1024);
+    vram_write(SCREEN_BUFFER, SCREEN_WIDTH * SCREEN_COLS);
     set_ppu();
     ppu_mask(MASK_SHOW_ALL);
     scroll(0, 0);
@@ -3465,8 +3464,8 @@ static void setup_demo_level(void) {
     initialize_tank(0);
     initialize_tank(1);
 
-    enemy_reinforce_count     = 20;
-    enemy_counter             = 20;
+    enemy_reinforce_count     = MAX_ENEMIES;
+    enemy_counter             = MAX_ENEMIES;
     enemy_type_number         = 0;
     SECONDS_CNT               = 0;
     construction_flag         = 0;
@@ -3479,7 +3478,7 @@ static void setup_demo_level(void) {
     bonus_x                   = 0;
     enemy_freeze_timer        = 0;
     enemy_respawn_place_index = 0;
-    hq_status                 = 0x80;
+    hq_status                 = HQ_STATUS_ALIVE;
     draw_normal_hq();
 
     for (i = 0; i < 4; ++i) {
@@ -3536,9 +3535,9 @@ GameState demoplay_loop(void) {
 
     ppu_off();
     set_bg_pal_number(3);
-    memfill(SCREEN_BUFFER, 0, 1024);
+    memfill(SCREEN_BUFFER, 0, SCREEN_WIDTH * SCREEN_COLS);
     vram_adr(NAMETABLE_A);
-    vram_write(SCREEN_BUFFER, 1024);
+    vram_write(SCREEN_BUFFER, SCREEN_WIDTH * SCREEN_COLS);
     set_ppu();
     ppu_mask(MASK_SHOW_ALL); 
 
@@ -3582,7 +3581,3 @@ void main (void) {
 		current_state = state_handlers[current_state]();
 	}
 }
-
-
-	
-	
