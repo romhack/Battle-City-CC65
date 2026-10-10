@@ -48,7 +48,7 @@ Tested on Windows.
 3. Your own copy of the original ROM, `Battle City (J).nes`, MD5
    `cd4fe2e78df0696dbe652f02c19541a1`, in the project root or in `rom/`
    (or point the extractor at it with `--rom PATH` or `BATTLE_CITY_ROM`).
-4. Run `compile.bat`. The result is `build/main.nes`.
+4. Run `compile.bat`. The result is `build/battle-city-cc65.nes`.
 
 The graphics and the stage layouts are not in the repository: the build reads
 them out of your ROM into `assets/`, which git ignores.
@@ -56,6 +56,18 @@ them out of your ROM into `assets/`, which git ignores.
 Other platforms are untested, but nothing here is Windows-specific except the
 batch file — `tools/extract_assets.py` is plain Python 3, and `compile.bat`
 lists the `cc65`/`ca65`/`ld65` steps and flags to run by hand.
+
+## Credits
+
+The port was written following two sources:
+
+* **[Programming NES games in C](https://shiru.untergrund.net/articles/programming_nes_games_in_c.htm)**
+  by Shiru — the approach the whole port is based on. Shiru also wrote
+  [`lib/neslib`](lib/neslib.h), the hardware layer used here, which is public
+  domain.
+* **[nesdoug](https://nesdoug.com/)** — the NES programming tutorial series.
+  The neslib and startup code in this project started from nesdoug's versions
+  of them.
 
 ## Legal
 

@@ -6,6 +6,7 @@ cls
 REM Configuration
 set src=src
 set name=main
+set out=battle-city-cc65
 set config=nrom_32k_horz.cfg
 
 REM --- COMPILER FLAGS ---
@@ -67,7 +68,7 @@ ca65 %src%\levels.s -g
 if errorlevel 1 goto error
 
 echo Linking...
-ld65 -C %config% -m %name%.map -o %name%.nes crt0.o %src%\sound.o %src%\globals.o %src%\util.o %src%\levels.o %src%\leveldata.o %src%\%name%.o nes.lib -Ln labels.txt --dbgfile %name%.dbg
+ld65 -C %config% -m %out%.map -o %out%.nes crt0.o %src%\sound.o %src%\globals.o %src%\util.o %src%\levels.o %src%\leveldata.o %src%\%name%.o nes.lib -Ln labels.txt --dbgfile %out%.dbg
 if errorlevel 1 goto error
 
 REM Cleanup and organize
@@ -81,14 +82,14 @@ move /Y %src%\levels.s build\ >nul
 move /Y %src%\%name%.s build\ >nul
 move /Y %src%\util.s build\ >nul
 
-move /Y %name%.nes build\ >nul
-move /Y %name%.dbg build\ >nul
-move /Y %name%.map build\ >nul
+move /Y %out%.nes build\ >nul
+move /Y %out%.dbg build\ >nul
+move /Y %out%.map build\ >nul
 
 REM Success
 echo.
 echo ================================
-echo SUCCESS! ROM: build\%name%.nes
+echo SUCCESS! ROM: build\%out%.nes
 echo ================================
 echo.
 echo Press R to rebuild, any other key to run and exit...
@@ -108,7 +109,7 @@ if errorlevel 2 goto end
 if errorlevel 1 goto build
 
 :run
-BUILD\%name%.nes
+BUILD\%out%.nes
 
 :end
 exit /b 0
