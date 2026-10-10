@@ -19,6 +19,21 @@ set CC_FLAGS=-t nes -Oirs -Cl --add-source -g
 REM Create BUILD directory if it doesn't exist
 if not exist build mkdir build
 
+REM Graphics and stage data are not in the repository; take them from the
+REM user's ROM before compiling.  See README.md.
+echo Extracting graphics and stages from the original ROM...
+call :find_python
+if not defined PY (
+    echo.
+    echo ERROR: Python 3 was not found on PATH.
+    echo        Install it from https://www.python.org/downloads/ and retry.
+    echo        The extractor can also be run by hand: python tools\extract_assets.py
+    goto error
+)
+%PY% tools\extract_assets.py
+if errorlevel 1 goto error
+
+echo.
 echo Compiling C source...
 cc65 %CC_FLAGS% %src%\globals.c
 if errorlevel 1 goto error
@@ -40,6 +55,10 @@ echo Assembling sound engine...
 ca65 %src%\sound.s -g
 if errorlevel 1 goto error
 
+echo Assembling extracted stage data...
+ca65 %src%\leveldata.s -g
+if errorlevel 1 goto error
+
 echo Assembling generated code...
 ca65 %src%\globals.s -g
 ca65 %src%\util.s -g
@@ -48,7 +67,7 @@ ca65 %src%\levels.s -g
 if errorlevel 1 goto error
 
 echo Linking...
-ld65 -C %config% -m %name%.map -o %name%.nes crt0.o %src%\sound.o %src%\globals.o %src%\util.o %src%\levels.o %src%\%name%.o nes.lib -Ln labels.txt --dbgfile %name%.dbg
+ld65 -C %config% -m %name%.map -o %name%.nes crt0.o %src%\sound.o %src%\globals.o %src%\util.o %src%\levels.o %src%\leveldata.o %src%\%name%.o nes.lib -Ln labels.txt --dbgfile %name%.dbg
 if errorlevel 1 goto error
 
 REM Cleanup and organize
@@ -59,7 +78,7 @@ del *.o
 move /Y labels.txt build\ >nul
 move /Y %src%\globals.s build\ >nul
 move /Y %src%\levels.s build\ >nul
-move /Y %src%\main.s build\ >nul
+move /Y %src%\%name%.s build\ >nul
 move /Y %src%\util.s build\ >nul
 
 move /Y %name%.nes build\ >nul
@@ -92,3 +111,15 @@ if errorlevel 1 goto build
 BUILD\%name%.nes
 
 :end
+exit /b 0
+
+REM --- subroutines ---
+:find_python
+set PY=
+where python >nul 2>nul
+if not errorlevel 1 set PY=python
+if not defined PY (
+    where py >nul 2>nul
+    if not errorlevel 1 set PY=py -3
+)
+goto :eof
